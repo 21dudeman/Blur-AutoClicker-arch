@@ -60,6 +60,9 @@ pub fn init_overlay(app: &AppHandle) -> AppResult<()> {
 
     log::info!("[Overlay] Running one-time init...");
 
+    // Click-through (`WS_EX_TRANSPARENT`) is a Win32 feature; on the GTK
+    // backend tao would panic trying to grab the gtk window during this state.
+    #[cfg(target_os = "windows")]
     window.set_ignore_cursor_events(true)?;
     let _ = window.set_decorations(false);
 

@@ -1,12 +1,20 @@
 use super::cycle::{execute_click_cycle, ClickCycleKind, ClickCyclePlan};
 use super::worker::{sleep_interruptible, RunControl};
+
+#[cfg(target_os = "windows")]
 use super::AUTOCLICKER_EXTRA_INFO;
+#[cfg(target_os = "windows")]
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-    GetKeyState, MapVirtualKeyW, SendInput, INPUT, INPUT_KEYBOARD, KEYBDINPUT,
-    KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, KEYEVENTF_SCANCODE, MAPVK_VK_TO_VSC_EX, VK_CAPITAL,
-    VK_SHIFT,
+    GetKeyState, MapVirtualKeyW, SendInput, INPUT, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_EXTENDEDKEY,
+    KEYEVENTF_KEYUP, KEYEVENTF_SCANCODE, MAPVK_VK_TO_VSC_EX, VK_CAPITAL, VK_SHIFT,
 };
 
+#[cfg(target_os = "linux")]
+const KEYEVENTF_KEYUP: u32 = 0x0000_0002;
+#[cfg(target_os = "linux")]
+use crate::x11::vkcodes::VK_SHIFT;
+
+#[cfg(target_os = "windows")]
 #[inline]
 fn vk_to_scan(vk: u16) -> (u16, bool) {
     // MAPVK_VK_TO_VSC_EX returns the scan code in the low byte and, for
@@ -18,6 +26,7 @@ fn vk_to_scan(vk: u16) -> (u16, bool) {
     ((raw & 0xFF) as u16, (raw >> 8) != 0)
 }
 
+#[cfg(target_os = "windows")]
 #[inline]
 pub fn make_keyboard_input(vk: u16, flags: u32) -> INPUT {
     let (scan, extended) = vk_to_scan(vk);
@@ -36,24 +45,42 @@ pub fn make_keyboard_input(vk: u16, flags: u32) -> INPUT {
     }
 }
 
+#[cfg(target_os = "windows")]
 #[inline]
 pub fn send_key_event(vk: u16, flags: u32) {
     let input = make_keyboard_input(vk, flags);
     unsafe { SendInput(1, &input, std::mem::size_of::<INPUT>() as i32) };
 }
 
+#[cfg(target_os = "linux")]
+#[inline]
+pub fn send_key_event(vk: u16, flags: u32) {
+    if flags & KEYEVENTF_KEYUP != 0 {
+        crate::x11::release_key(vk);
+    } else {
+        crate::x11::press_key(vk);
+    }
+}
+
 pub fn is_alphabetic_vk(vk: u16) -> bool {
     (b'A' as u16..=b'Z' as u16).contains(&vk)
 }
 
+#[cfg(target_os = "windows")]
 fn caps_lock_enabled() -> bool {
     unsafe { (GetKeyState(VK_CAPITAL as i32) & 1) != 0 }
+}
+
+#[cfg(target_os = "linux")]
+fn caps_lock_enabled() -> bool {
+    crate::x11::caps_lock_enabled()
 }
 
 fn should_hold_shift_for_case(vk: u16, uppercase: bool) -> bool {
     is_alphabetic_vk(vk) && (caps_lock_enabled() != uppercase)
 }
 
+#[cfg(target_os = "windows")]
 fn push_key_press(inputs: &mut Vec<INPUT>, vk: u16, use_shift: bool) {
     if use_shift {
         inputs.push(make_keyboard_input(VK_SHIFT, 0));
@@ -97,6 +124,7 @@ fn send_key_up_inner(vk: u16, use_shift: bool) {
     }
 }
 
+#[cfg(target_os = "windows")]
 pub fn send_key_batch(vk: u16, n: usize, uppercase: bool) {
     let use_shift = should_hold_shift_for_case(vk, uppercase);
     let inputs_per_press = if use_shift { 4 } else { 2 };
@@ -111,6 +139,21 @@ pub fn send_key_batch(vk: u16, n: usize, uppercase: bool) {
             std::mem::size_of::<INPUT>() as i32,
         )
     };
+}
+
+#[cfg(target_os = "linux")]
+pub fn send_key_batch(vk: u16, n: usize, uppercase: bool) {
+    let use_shift = should_hold_shift_for_case(vk, uppercase);
+    for _ in 0..n {
+        if use_shift {
+            send_key_event(VK_SHIFT, 0);
+        }
+        send_key_event(vk, 0);
+        send_key_event(vk, KEYEVENTF_KEYUP);
+        if use_shift {
+            send_key_event(VK_SHIFT, KEYEVENTF_KEYUP);
+        }
+    }
 }
 
 pub fn send_key_presses(

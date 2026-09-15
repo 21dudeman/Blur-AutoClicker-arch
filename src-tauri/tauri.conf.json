@@ -8,7 +8,7 @@
     "devUrl": "http://localhost:5173",
     "beforeDevCommand": "npm run vite",
     "beforeBuildCommand": "npm run frontend:build",
-    "beforeBundleCommand": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/prepare-windows-redist.ps1",
+    "beforeBundleCommand": "sh -c 'if [ \"$TAURI_ENV_PLATFORM\" = \"windows\" ]; then powershell -NoProfile -ExecutionPolicy Bypass -File scripts/prepare-windows-redist.ps1; fi'",
     "removeUnusedCommands": true
   },
   "app": {
@@ -27,26 +27,27 @@
   "plugins": {
     "updater": {
       "endpoints": [
-        "https://github.com/Blur009/Blur-AutoClicker/releases/latest/download/latest.json"
+        "https://github.com/21dudeman/Blur-AutoClicker-arch/releases/latest/download/latest.json"
       ],
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDIyREY0RTc2QTU4Qjc1N0UKUldSK2RZdWxkazdmSW1IQmI4ZVMwOTRzWnBiVENhMFNYMFRtN0V4R3N0Q2JXQUdqM2t4VnRnNUYK"
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDc4NTAyRkEyNUZBNTMyNzQKUldSME1xVmZvaTlRZUVUREs3VytESmVqeGs5ZkxJckRpbXI3eUVraTg3dFd0OUdGVFdyZ3lLZ0QK"
     }
   },
   "bundle": {
     "active": true,
-    "targets": "nsis",
+    "targets": ["appimage", "deb"],
     "createUpdaterArtifacts": true,
     "publisher": "Blur009",
     "copyright": "Copyright (c) Blur009",
     "category": "Utility",
     "shortDescription": "Configurable auto clicker with accurate CPS timing.",
     "longDescription": "Performance-focused auto clicker with global hotkeys, optional overlay, and advanced timing. Licensed under GPLv3.",
-    "homepage": "https://github.com/Blur009/Blur-AutoClicker",
+    "homepage": "https://github.com/21dudeman/Blur-AutoClicker-arch",
     "resources": {
       "resources/*": ""
     },
     "icon": [
-      "icons/icon-deactivated-dark.ico"
+      "icons/icon-deactivated-dark.ico",
+      "icons/icon.png"
     ],
     "windows": {
       "webviewInstallMode": {

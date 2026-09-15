@@ -16,7 +16,7 @@ import UnavailableReason from "./UnavailableReason";
 import "./Updatebanner.css";
 
 const GITHUB_RELEASES_URL =
-  "https://github.com/Blur009/Blur-AutoClicker/releases/latest";
+  "https://github.com/21dudeman/Blur-AutoClicker-arch/releases/latest";
 
 interface UpdateBannerProps {
   currentVersion: string;

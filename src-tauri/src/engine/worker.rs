@@ -13,7 +13,9 @@ use crate::ClickerSettings;
 use crate::ClickerState;
 use crate::ClickerStatusPayload;
 use crate::STATUS_EVENT;
+#[cfg(target_os = "windows")]
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetDoubleClickTime;
+#[cfg(target_os = "windows")]
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     SystemParametersInfoW, SPI_GETKEYBOARDDELAY, SPI_GETKEYBOARDSPEED,
 };
@@ -30,6 +32,7 @@ use super::process;
 use super::rng::SmallRng;
 use super::ClickPointTarget;
 use super::ClickerConfig;
+#[cfg(target_os = "windows")]
 use super::NtSetTimerResolution;
 use super::RunOutcome;
 use super::CLICK_COUNT;
@@ -38,13 +41,16 @@ use super::CLICK_COUNT;
 // changed from normal cpu measurement because it was not accurately
 // showing cpu usage for short clicker run times.
 
+#[cfg(target_os = "windows")]
 windows_targets::link!(
     "kernel32.dll" "system" fn QueryThreadCycleTime(thread: *mut core::ffi::c_void, cycles: *mut u64) -> i32
 );
+#[cfg(target_os = "windows")]
 windows_targets::link!(
     "kernel32.dll" "system" fn GetCurrentThread() -> *mut core::ffi::c_void
 );
 
+#[cfg(target_os = "windows")]
 #[inline]
 fn thread_cycles() -> u64 {
     let mut cycles: u64 = 0;
@@ -52,6 +58,36 @@ fn thread_cycles() -> u64 {
         QueryThreadCycleTime(GetCurrentThread(), &mut cycles);
     }
     cycles
+}
+
+#[cfg(target_os = "linux")]
+#[repr(C)]
+struct LinuxTimespec {
+    tv_sec: i64,
+    tv_nsec: i64,
+}
+
+#[cfg(target_os = "linux")]
+#[link(name = "c")]
+extern "C" {
+    fn clock_gettime(clock_id: i32, tp: *mut LinuxTimespec) -> i32;
+}
+
+#[cfg(target_os = "linux")]
+const CLOCK_THREAD_CPUTIME_ID: i32 = 3;
+
+#[cfg(target_os = "linux")]
+#[inline]
+fn thread_cycles() -> u64 {
+    // Nanoseconds of CPU time consumed by the calling thread, mirroring the
+    // per-thread semantics of the Windows QueryThreadCycleTime path. Enables
+    // accurate cycle-frequency calibration and CPU-usage accounting.
+    let mut ts = LinuxTimespec { tv_sec: 0, tv_nsec: 0 };
+    let status = unsafe { clock_gettime(CLOCK_THREAD_CPUTIME_ID, &mut ts) };
+    if status != 0 {
+        return 0;
+    }
+    (ts.tv_sec as u64).saturating_mul(1_000_000_000).saturating_add(ts.tv_nsec as u64)
 }
 
 impl ClickerConfig {
@@ -80,8 +116,10 @@ fn calibrate_cycle_freq() -> f64 {
     }
 }
 
+#[cfg(target_os = "windows")]
 struct TimerResolutionGuard;
 
+#[cfg(target_os = "windows")]
 impl TimerResolutionGuard {
     fn new() -> Self {
         let mut current = 0u32;
@@ -97,11 +135,29 @@ impl TimerResolutionGuard {
     }
 }
 
+#[cfg(target_os = "windows")]
 impl Drop for TimerResolutionGuard {
     fn drop(&mut self) {
         let mut current = 0u32;
         unsafe { NtSetTimerResolution(10000, 0, &mut current) };
     }
+}
+
+#[cfg(target_os = "linux")]
+struct TimerResolutionGuard;
+
+#[cfg(target_os = "linux")]
+impl TimerResolutionGuard {
+    fn new() -> Self {
+        // X11 timers are already served at sub-millisecond granularity by the
+        // compositor; no global timer-quality knob exists here.
+        Self
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for TimerResolutionGuard {
+    fn drop(&mut self) {}
 }
 
 #[derive(Clone)]
@@ -286,9 +342,17 @@ fn interval_secs_from_settings(settings: &ClickerSettings) -> AppResult<f64> {
     })
 }
 
+#[cfg(target_os = "windows")]
 fn system_double_click_gap_ms() -> u32 {
     let system_timeout_ms = unsafe { GetDoubleClickTime() };
     ((system_timeout_ms as f64) * 0.9).floor() as u32
+}
+
+#[cfg(target_os = "linux")]
+fn system_double_click_gap_ms() -> u32 {
+    // X11 doesn't expose a system-wide double-click timeout; use a
+    // conservative value matching a typical desktop setting (450 ms).
+    450
 }
 
 fn current_cycle_target(config: &ClickerConfig, click_point_index: usize) -> ClickPointTarget {
@@ -548,6 +612,7 @@ struct ClickerContext {
     double_plan: ClickCyclePlan,
 }
 
+#[cfg(target_os = "windows")]
 fn get_keyboard_repeat_settings() -> (u32, u32) {
     // SPI_GETKEYBOARDDELAY: 0=250ms, 1=500ms, 2=750ms, 3=1000ms
     let mut delay_setting: u32 = 0;
@@ -586,6 +651,13 @@ fn get_keyboard_repeat_settings() -> (u32, u32) {
     };
 
     (repeat_delay_ms, repeat_interval_ms)
+}
+
+#[cfg(target_os = "linux")]
+fn get_keyboard_repeat_settings() -> (u32, u32) {
+    // Use a sensible default; most Linux desktops use ~250ms delay / ~33ms
+    // interval which matches the default Windows settings.
+    (250, 33)
 }
 
 impl ClickerContext {

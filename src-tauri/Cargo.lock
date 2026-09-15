@@ -16,6 +16,7 @@ dependencies = [
  "image",
  "log",
  "open",
+ "pkg-config",
  "raw-window-handle",
  "reqwest",
  "serde",

@@ -144,7 +144,7 @@ export default function GeneralSection({
               title="GitHub"
               onClick={(e) => {
                 e.preventDefault();
-                void openUrl("https://github.com/Blur009/Blur-AutoClicker");
+                void openUrl("https://github.com/21dudeman/Blur-AutoClicker-arch");
               }}
             >
               <svg

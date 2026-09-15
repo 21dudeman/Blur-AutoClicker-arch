@@ -3,7 +3,6 @@ use crate::engine::worker::now_epoch_ms;
 use crate::engine::worker::start_clicker_inner;
 use crate::engine::worker::stop_clicker_inner;
 use crate::engine::worker::toggle_clicker_inner;
-use crate::engine::AUTOCLICKER_EXTRA_INFO;
 use crate::error::poisoned_inner;
 use crate::error::AppError;
 use crate::error::AppResult;
@@ -14,9 +13,16 @@ use std::sync::OnceLock;
 use std::time::Duration;
 use std::time::Instant;
 use tauri::Manager;
+
+#[cfg(target_os = "windows")]
+use crate::engine::AUTOCLICKER_EXTRA_INFO;
+#[cfg(target_os = "windows")]
 use windows_sys::Win32::Foundation::{GetLastError, LRESULT, POINT};
+#[cfg(target_os = "windows")]
 use windows_sys::Win32::System::Threading::GetCurrentProcessId;
+#[cfg(target_os = "windows")]
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::*;
+#[cfg(target_os = "windows")]
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, GetAncestor, GetCursorPos, GetWindowThreadProcessId, PeekMessageW,
     SetWindowsHookExW, UnhookWindowsHookEx, WaitMessage, WindowFromPoint, GA_ROOT, KBDLLHOOKSTRUCT,
@@ -24,11 +30,15 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_QUIT, WM_RBUTTONDOWN, WM_RBUTTONUP,
     WM_SYSKEYDOWN, WM_XBUTTONDOWN, WM_XBUTTONUP,
 };
-
-const PM_REMOVE: u32 = 0x0001;
-const PM_NOREMOVE: u32 = 0x0000;
+#[cfg(target_os = "linux")]
+use crate::x11::vkcodes::*;
 
 const POLL_INTERVAL: Duration = Duration::from_millis(4);
+
+#[cfg(target_os = "windows")]
+const PM_REMOVE: u32 = 0x0001;
+#[cfg(target_os = "windows")]
+const PM_NOREMOVE: u32 = 0x0000;
 
 const MAX_CHORD_MAINS: usize = 5;
 
@@ -366,6 +376,7 @@ fn is_physical_vk_down(vk: i32) -> bool {
     physical_key_state()[vk as usize].load(Ordering::Relaxed)
 }
 
+#[cfg(target_os = "windows")]
 fn normalize_low_level_keyboard_vk(khs: &KBDLLHOOKSTRUCT) -> i32 {
     match khs.vkCode as u16 {
         VK_SHIFT => {
@@ -394,6 +405,7 @@ fn normalize_low_level_keyboard_vk(khs: &KBDLLHOOKSTRUCT) -> i32 {
     }
 }
 
+#[cfg(target_os = "windows")]
 unsafe extern "system" fn mouse_ll_proc(n_code: i32, w_param: usize, l_param: isize) -> LRESULT {
     if n_code >= 0 {
         let mhs = &*(l_param as *const MSLLHOOKSTRUCT);
@@ -431,6 +443,7 @@ unsafe extern "system" fn mouse_ll_proc(n_code: i32, w_param: usize, l_param: is
     CallNextHookEx(std::ptr::null_mut(), n_code, w_param, l_param)
 }
 
+#[cfg(target_os = "windows")]
 unsafe extern "system" fn keyboard_ll_proc(n_code: i32, w_param: usize, l_param: isize) -> LRESULT {
     if n_code >= 0 {
         let khs = &*(l_param as *const KBDLLHOOKSTRUCT);
@@ -445,6 +458,172 @@ unsafe extern "system" fn keyboard_ll_proc(n_code: i32, w_param: usize, l_param:
     CallNextHookEx(std::ptr::null_mut(), n_code, w_param, l_param)
 }
 
+struct HotkeyPollCtx {
+    was_pressed: bool,
+    was_suppressed: bool,
+    master_was_pressed: bool,
+}
+
+/// Single-iteration of the global hotkey state machine. Shared by both the
+/// Windows hook message-loop and the Linux XQueryKeymap poll so the
+/// evaluation logic is never duplicated.
+fn poll_hotkey_iteration(app: &AppHandle, ctx: &mut HotkeyPollCtx) {
+    let state = app.state::<ClickerState>();
+
+    let (binding, strict) = {
+        let binding = state
+            .registered_hotkey
+            .lock()
+            .unwrap_or_else(poisoned_inner)
+            .clone();
+        let strict = state
+            .settings
+            .lock()
+            .unwrap_or_else(poisoned_inner)
+            .strict_hotkey_modifiers;
+        (binding, strict)
+    };
+
+    let running = state.running.load(Ordering::SeqCst);
+    let currently_pressed = binding
+        .as_ref()
+        .map(|b| {
+            if HOOKS_ACTIVE.load(Ordering::Relaxed) {
+                let physical = is_hotkey_binding_pressed_physical(b, strict);
+                physical || (!running && is_hotkey_binding_pressed(b, strict))
+            } else {
+                is_hotkey_binding_pressed(b, strict)
+            }
+        })
+        .unwrap_or(false);
+
+    let master_binding = {
+        state
+            .master_key
+            .lock()
+            .unwrap_or_else(poisoned_inner)
+            .clone()
+    };
+    let master_hold = state.master_hold_mode.load(Ordering::SeqCst);
+    let mut master_enabled = state.master_enabled.load(Ordering::SeqCst);
+
+    let master_binding_pressed = match master_binding {
+        None => false,
+        Some(ref b) => {
+            if HOOKS_ACTIVE.load(Ordering::Relaxed) {
+                is_hotkey_binding_pressed_physical(b, strict)
+                    || (!running && is_hotkey_binding_pressed(b, strict))
+            } else {
+                is_hotkey_binding_pressed(b, strict)
+            }
+        }
+    };
+
+    if !master_hold && master_binding_pressed && !ctx.master_was_pressed {
+        master_enabled = !master_enabled;
+        state.master_enabled.store(master_enabled, Ordering::SeqCst);
+    }
+    ctx.master_was_pressed = master_binding_pressed;
+
+    let master_allowed = match master_binding {
+        None => true,
+        Some(_) => {
+            if master_hold {
+                master_binding_pressed
+            } else {
+                master_enabled
+            }
+        }
+    };
+
+    if master_allowed != state.last_master_allowed.load(Ordering::SeqCst) {
+        state.master_allowed.store(master_allowed, Ordering::SeqCst);
+        state
+            .last_master_allowed
+            .store(master_allowed, Ordering::SeqCst);
+        emit_status(app);
+    }
+
+    if running && !master_allowed {
+        let _ = stop_clicker_inner(app, Some(String::from("Stopped by master switch")));
+    }
+
+    let suppress_until = state.suppress_hotkey_until_ms.load(Ordering::SeqCst);
+    let suppress_until_release = state
+        .suppress_hotkey_until_release
+        .load(Ordering::SeqCst);
+    let hotkey_capture_active = state.hotkey_capture_active.load(Ordering::SeqCst);
+    let click_point_pick_active = state.click_point_pick_active.load(Ordering::SeqCst);
+    let custom_stop_zone_pick_active = state
+        .custom_stop_zone_pick_active
+        .load(Ordering::SeqCst);
+
+    if hotkey_capture_active || click_point_pick_active || custom_stop_zone_pick_active {
+        if currently_pressed && !ctx.was_pressed && hotkey_capture_active {
+            let needs_emit = {
+                let mut warning = state.warning.lock().unwrap_or_else(poisoned_inner);
+                if warning.is_none() {
+                    *warning = Some(String::from("Finish setting hotkey first"));
+                    true
+                } else {
+                    false
+                }
+            };
+            if needs_emit {
+                emit_status(app);
+            }
+        }
+        ctx.was_pressed = currently_pressed;
+        return;
+    }
+
+    if suppress_until_release {
+        if currently_pressed {
+            ctx.was_pressed = true;
+            return;
+        }
+        state
+            .suppress_hotkey_until_release
+            .store(false, Ordering::SeqCst);
+        ctx.was_pressed = false;
+        ctx.was_suppressed = false;
+        return;
+    }
+
+    if now_epoch_ms() < suppress_until {
+        ctx.was_pressed = currently_pressed;
+        return;
+    }
+
+    let suppress_mouse_on_own_window = binding
+        .as_ref()
+        .is_some_and(is_mouse_hotkey_binding)
+        && is_cursor_over_own_window();
+
+    if currently_pressed && !ctx.was_pressed {
+        if suppress_mouse_on_own_window {
+            ctx.was_suppressed = true;
+        } else {
+            ctx.was_suppressed = false;
+            if master_allowed {
+                handle_hotkey_pressed(app);
+            }
+        }
+    } else if !currently_pressed && ctx.was_pressed {
+        if !ctx.was_suppressed {
+            handle_hotkey_released(app);
+        }
+        ctx.was_suppressed = false;
+    }
+
+    ctx.was_pressed = currently_pressed;
+}
+
+// ---------------------------------------------------------------------------
+// Windows: low-level hook based listener
+// ---------------------------------------------------------------------------
+
+#[cfg(target_os = "windows")]
 pub fn start_hotkey_listener(app: AppHandle) {
     std::thread::spawn(move || unsafe {
         // Delay hook installation to let WebView2/windows fully initialise.
@@ -470,10 +649,11 @@ pub fn start_hotkey_listener(app: AppHandle) {
             log::warn!("[Hotkeys] {}", AppError::WindowsSystem(err));
         }
 
-        let state = app.state::<ClickerState>();
-        let mut was_pressed = false;
-        let mut was_suppressed = false;
-        let mut master_was_pressed = false;
+        let mut ctx = HotkeyPollCtx {
+            was_pressed: false,
+            was_suppressed: false,
+            master_was_pressed: false,
+        };
         let mut last_check = Instant::now();
         let mut msg: MSG = std::mem::zeroed();
 
@@ -486,153 +666,7 @@ pub fn start_hotkey_listener(app: AppHandle) {
 
             if last_check.elapsed() >= POLL_INTERVAL {
                 last_check = Instant::now();
-
-                let (binding, strict) = {
-                    let binding = state
-                        .registered_hotkey
-                        .lock()
-                        .unwrap_or_else(poisoned_inner)
-                        .clone();
-                    let strict = state
-                        .settings
-                        .lock()
-                        .unwrap_or_else(poisoned_inner)
-                        .strict_hotkey_modifiers;
-                    (binding, strict)
-                };
-
-                let running = state.running.load(Ordering::SeqCst);
-                let currently_pressed = binding
-                    .as_ref()
-                    .map(|b| {
-                        if HOOKS_ACTIVE.load(Ordering::Relaxed) {
-                            let physical = is_hotkey_binding_pressed_physical(b, strict);
-                            physical || (!running && is_hotkey_binding_pressed(b, strict))
-                        } else {
-                            is_hotkey_binding_pressed(b, strict)
-                        }
-                    })
-                    .unwrap_or(false);
-
-                let master_binding = {
-                    state
-                        .master_key
-                        .lock()
-                        .unwrap_or_else(poisoned_inner)
-                        .clone()
-                };
-                let master_hold = state.master_hold_mode.load(Ordering::SeqCst);
-                let mut master_enabled = state.master_enabled.load(Ordering::SeqCst);
-
-                let master_binding_pressed = match master_binding {
-                    None => false,
-                    Some(ref b) => {
-                        if HOOKS_ACTIVE.load(Ordering::Relaxed) {
-                            is_hotkey_binding_pressed_physical(b, strict)
-                                || (!running && is_hotkey_binding_pressed(b, strict))
-                        } else {
-                            is_hotkey_binding_pressed(b, strict)
-                        }
-                    }
-                };
-
-                if !master_hold && master_binding_pressed && !master_was_pressed {
-                    master_enabled = !master_enabled;
-                    state.master_enabled.store(master_enabled, Ordering::SeqCst);
-                }
-                master_was_pressed = master_binding_pressed;
-
-                let master_allowed = match master_binding {
-                    None => true,
-                    Some(_) => {
-                        if master_hold {
-                            master_binding_pressed
-                        } else {
-                            master_enabled
-                        }
-                    }
-                };
-
-                if master_allowed != state.last_master_allowed.load(Ordering::SeqCst) {
-                    state.master_allowed.store(master_allowed, Ordering::SeqCst);
-                    state
-                        .last_master_allowed
-                        .store(master_allowed, Ordering::SeqCst);
-                    emit_status(&app);
-                }
-
-                if running && !master_allowed {
-                    let _ =
-                        stop_clicker_inner(&app, Some(String::from("Stopped by master switch")));
-                }
-
-                let suppress_until = state.suppress_hotkey_until_ms.load(Ordering::SeqCst);
-                let suppress_until_release =
-                    state.suppress_hotkey_until_release.load(Ordering::SeqCst);
-                let hotkey_capture_active = state.hotkey_capture_active.load(Ordering::SeqCst);
-                let click_point_pick_active = state.click_point_pick_active.load(Ordering::SeqCst);
-                let custom_stop_zone_pick_active =
-                    state.custom_stop_zone_pick_active.load(Ordering::SeqCst);
-
-                if hotkey_capture_active || click_point_pick_active || custom_stop_zone_pick_active
-                {
-                    if currently_pressed && !was_pressed && hotkey_capture_active {
-                        let needs_emit = {
-                            let mut warning = state.warning.lock().unwrap_or_else(poisoned_inner);
-                            if warning.is_none() {
-                                *warning = Some(String::from("Finish setting hotkey first"));
-                                true
-                            } else {
-                                false
-                            }
-                        };
-                        if needs_emit {
-                            emit_status(&app);
-                        }
-                    }
-                    was_pressed = currently_pressed;
-                    continue;
-                }
-
-                if suppress_until_release {
-                    if currently_pressed {
-                        was_pressed = true;
-                        continue;
-                    }
-                    state
-                        .suppress_hotkey_until_release
-                        .store(false, Ordering::SeqCst);
-                    was_pressed = false;
-                    was_suppressed = false;
-                    continue;
-                }
-
-                if now_epoch_ms() < suppress_until {
-                    was_pressed = currently_pressed;
-                    continue;
-                }
-
-                let suppress_mouse_on_own_window =
-                    binding.as_ref().is_some_and(is_mouse_hotkey_binding)
-                        && is_cursor_over_own_window();
-
-                if currently_pressed && !was_pressed {
-                    if suppress_mouse_on_own_window {
-                        was_suppressed = true;
-                    } else {
-                        was_suppressed = false;
-                        if master_allowed {
-                            handle_hotkey_pressed(&app);
-                        }
-                    }
-                } else if !currently_pressed && was_pressed {
-                    if !was_suppressed {
-                        handle_hotkey_released(&app);
-                    }
-                    was_suppressed = false;
-                }
-
-                was_pressed = currently_pressed;
+                poll_hotkey_iteration(&app, &mut ctx);
             } else if HOOKS_ACTIVE.load(Ordering::Relaxed) {
                 if PeekMessageW(&mut msg, std::ptr::null_mut(), 0, 0, PM_NOREMOVE) == 0 {
                     WaitMessage();
@@ -651,6 +685,39 @@ pub fn start_hotkey_listener(app: AppHandle) {
     });
 }
 
+// ---------------------------------------------------------------------------
+// Linux: XQueryKeymap + XQueryPointer polling
+// ---------------------------------------------------------------------------
+
+#[cfg(target_os = "linux")]
+pub fn start_hotkey_listener(app: AppHandle) {
+    std::thread::spawn(move || {
+        // Allow the app's X11 windows to fully map before we start polling.
+        std::thread::sleep(Duration::from_secs(2));
+        HOOKS_ACTIVE.store(true, Ordering::SeqCst);
+        log::info!("[Hotkeys] Linux X11 polling listener started");
+
+        let mut ctx = HotkeyPollCtx {
+            was_pressed: false,
+            was_suppressed: false,
+            master_was_pressed: false,
+        };
+        let mut last_check = Instant::now();
+
+        loop {
+            let now = Instant::now();
+            if now.duration_since(last_check) >= POLL_INTERVAL {
+                last_check = Instant::now();
+                // Rebuild the physical key state from the X11 server.
+                crate::x11::refresh_physical_state(physical_key_state());
+                poll_hotkey_iteration(&app, &mut ctx);
+            } else {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
+    });
+}
+
 fn is_mouse_hotkey_binding(binding: &HotkeyBinding) -> bool {
     let mouse_vks = [
         VK_LBUTTON as i32,
@@ -662,6 +729,7 @@ fn is_mouse_hotkey_binding(binding: &HotkeyBinding) -> bool {
     binding.main_vks.iter().any(|vk| mouse_vks.contains(vk))
 }
 
+#[cfg(target_os = "windows")]
 fn is_cursor_over_own_window() -> bool {
     unsafe {
         let mut pt: POINT = std::mem::zeroed();
@@ -678,6 +746,11 @@ fn is_cursor_over_own_window() -> bool {
         GetWindowThreadProcessId(root, &mut pid);
         pid == GetCurrentProcessId()
     }
+}
+
+#[cfg(target_os = "linux")]
+fn is_cursor_over_own_window() -> bool {
+    crate::x11::pointer_over_own_window()
 }
 
 fn is_hotkey_binding_pressed_physical(binding: &HotkeyBinding, strict: bool) -> bool {
@@ -941,8 +1014,20 @@ fn modifiers_match(binding: &HotkeyBinding, down: &DownState, strict: bool) -> b
     true
 }
 
+#[cfg(target_os = "windows")]
 pub fn is_vk_down(vk: i32) -> bool {
     unsafe { (GetAsyncKeyState(vk) as u16 & 0x8000) != 0 }
+}
+
+#[cfg(target_os = "linux")]
+pub fn is_vk_down(vk: i32) -> bool {
+    if !(0..256).contains(&vk) {
+        return false;
+    }
+    // Mirror GetAsyncKeyState behaviour: generic modifier codes (VK_SHIFT,
+    // VK_CONTROL, VK_MENU) return "pressed" if either side is held, exactly
+    // like the physical-state poll fills them.
+    physical_key_state()[vk as usize].load(Ordering::Relaxed)
 }
 
 fn binding(vk: i32, token: &str) -> (i32, String) {

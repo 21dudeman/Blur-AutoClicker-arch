@@ -2,16 +2,24 @@ use std::sync::{mpsc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use tauri::{AppHandle, Emitter, Manager};
+
+#[cfg(target_os = "windows")]
 use windows_sys::Win32::Foundation::{GetLastError, LPARAM, LRESULT, WPARAM};
+#[cfg(target_os = "windows")]
 use windows_sys::Win32::System::Threading::GetCurrentThreadId;
+#[cfg(target_os = "windows")]
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     GetAsyncKeyState, VK_CONTROL, VK_ESCAPE, VK_SHIFT,
 };
+#[cfg(target_os = "windows")]
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, GetMessageW, PostThreadMessageW, SetWindowsHookExW, UnhookWindowsHookEx, HHOOK,
     KBDLLHOOKSTRUCT, MSG, MSLLHOOKSTRUCT, WH_KEYBOARD_LL, WH_MOUSE_LL, WM_KEYDOWN, WM_MOUSEMOVE,
     WM_QUIT, WM_RBUTTONDBLCLK, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SYSKEYDOWN,
 };
+
+#[cfg(target_os = "linux")]
+use crate::x11::vkcodes::*;
 
 use crate::engine::mouse::{current_virtual_screen_rect, VirtualScreenRect};
 use crate::error::poisoned_inner;
@@ -53,8 +61,11 @@ enum KeyboardHookDecision {
 #[derive(Default)]
 struct PickerRuntime {
     active: bool,
+    #[cfg(target_os = "windows")]
     mouse_hook: HHOOK,
+    #[cfg(target_os = "windows")]
     keyboard_hook: HHOOK,
+    #[cfg(target_os = "windows")]
     thread_id: u32,
     app: Option<AppHandle>,
     last_cursor_emit: Option<Instant>,
@@ -90,6 +101,11 @@ fn classify_keyboard_message(message: u32, virtual_key: u32) -> KeyboardHookDeci
     }
 }
 
+// ---------------------------------------------------------------------------
+// Windows hook-based listener
+// ---------------------------------------------------------------------------
+
+#[cfg(target_os = "windows")]
 pub fn start_click_point_pick_inner(app: AppHandle) -> AppResult<()> {
     crate::custom_stop_zone_picker::cancel_custom_stop_zone_pick_inner(&app);
 
@@ -174,6 +190,116 @@ pub fn start_click_point_pick_inner(app: AppHandle) -> AppResult<()> {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Linux X11 pointer-grab + polling listener
+// ---------------------------------------------------------------------------
+
+#[cfg(target_os = "linux")]
+pub fn start_click_point_pick_inner(app: AppHandle) -> AppResult<()> {
+    crate::custom_stop_zone_picker::cancel_custom_stop_zone_pick_inner(&app);
+
+    {
+        let mut runtime = picker().lock().unwrap_or_else(poisoned_inner);
+        if runtime.active {
+            crate::overlay::show_click_point_pick_overlay(&app)?;
+            return Ok(());
+        }
+        runtime.active = true;
+        runtime.app = Some(app.clone());
+        runtime.last_cursor_emit = None;
+        runtime.stop_after_right_up = false;
+    }
+
+    app.state::<ClickerState>()
+        .click_point_pick_active
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+
+    crate::overlay::show_click_point_pick_overlay(&app)?;
+
+    let (ready_tx, ready_rx) = mpsc::channel();
+
+    std::thread::spawn(move || {
+        if !crate::x11::begin_pointer_redirect() {
+            let _ = ready_tx.send(Err(AppError::ChannelFailure));
+            return;
+        }
+        let _ = ready_tx.send(Ok(()));
+
+        let mut right_was_pressed = false;
+
+        loop {
+            {
+                let runtime = picker().lock().unwrap_or_else(poisoned_inner);
+                if !runtime.active {
+                    break;
+                }
+            }
+
+            std::thread::sleep(Duration::from_millis(8));
+
+            let mask = crate::x11::pointer_button_mask();
+            let right = (mask & crate::x11::Button3Mask) != 0;
+            let pos = crate::x11::cursor_position().unwrap_or((0, 0));
+
+            emit_cursor_position(pos.0, pos.1);
+
+            if right && !right_was_pressed {
+                let shift = crate::x11::is_vk_pressed_now(VK_LSHIFT)
+                    || crate::x11::is_vk_pressed_now(VK_RSHIFT);
+                let ctrl = crate::x11::is_vk_pressed_now(VK_LCONTROL)
+                    || crate::x11::is_vk_pressed_now(VK_RCONTROL);
+                match classify_mouse_message(WM_RBUTTONDOWN, shift, ctrl) {
+                    MouseHookDecision::Pick { continue_picking } => {
+                        emit_pick(pos.0, pos.1, continue_picking);
+                        if !continue_picking {
+                            let mut runtime = picker().lock().unwrap_or_else(poisoned_inner);
+                            runtime.stop_after_right_up = true;
+                        }
+                    }
+                    MouseHookDecision::Delete => {
+                        emit_delete_request(pos.0, pos.1);
+                    }
+                    _ => {}
+                }
+            } else if !right && right_was_pressed {
+                let mut runtime = picker().lock().unwrap_or_else(poisoned_inner);
+                if runtime.stop_after_right_up {
+                    runtime.stop_after_right_up = false;
+                    drop(runtime);
+                    stop_click_point_pick(None, true);
+                    break;
+                }
+            }
+
+            if crate::x11::is_key_name_pressed("Escape") {
+                cancel_click_point_pick_from_hook();
+                break;
+            }
+
+            right_was_pressed = right;
+        }
+
+        crate::x11::end_pointer_redirect();
+        log::info!("[ClickPointPick] Linux picker thread finished");
+    });
+
+    match ready_rx.recv_timeout(Duration::from_secs(1)) {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(error)) => {
+            cancel_click_point_pick_inner(&app);
+            Err(error)
+        }
+        Err(_) => {
+            cancel_click_point_pick_inner(&app);
+            Err(AppError::ChannelFailure)
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Shared cleanup / cancellation
+// ---------------------------------------------------------------------------
+
 fn cancel_click_point_pick_from_hook() {
     let app = stop_click_point_pick(None, true);
     if let Some(app) = app {
@@ -190,15 +316,18 @@ fn stop_click_point_pick(
     app_override: Option<AppHandle>,
     notify_overlay: bool,
 ) -> Option<AppHandle> {
-    let (app, thread_id) = {
+    let (app, _thread_id) = {
         let mut runtime = picker().lock().unwrap_or_else(poisoned_inner);
         let app = app_override.or_else(|| runtime.app.clone());
-        let thread_id = runtime.thread_id;
+        #[cfg(target_os = "windows")]
+        let _thread_id = runtime.thread_id;
+        #[cfg(not(target_os = "windows"))]
+        let _thread_id = 0u32;
         runtime.active = false;
         runtime.app = None;
         runtime.last_cursor_emit = None;
         runtime.stop_after_right_up = false;
-        (app, thread_id)
+        (app, _thread_id)
     };
 
     if let Some(app) = &app {
@@ -211,14 +340,21 @@ fn stop_click_point_pick(
         }
     }
 
-    if thread_id != 0 {
+    #[cfg(target_os = "windows")]
+    if _thread_id != 0 {
         unsafe {
-            PostThreadMessageW(thread_id, WM_QUIT, 0, 0);
+            PostThreadMessageW(_thread_id, WM_QUIT, 0, 0);
         }
     }
 
     app
 }
+
+// ---------------------------------------------------------------------------
+// Windows hook procs
+// ---------------------------------------------------------------------------
+
+#[cfg(target_os = "windows")]
 unsafe extern "system" fn mouse_hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     if code < 0 {
         return CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam);
@@ -265,6 +401,8 @@ unsafe extern "system" fn mouse_hook_proc(code: i32, wparam: WPARAM, lparam: LPA
         }
     }
 }
+
+#[cfg(target_os = "windows")]
 unsafe extern "system" fn keyboard_hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     if code < 0 {
         return CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam);
@@ -281,6 +419,10 @@ unsafe extern "system" fn keyboard_hook_proc(code: i32, wparam: WPARAM, lparam: 
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Emitter helpers (shared across platforms)
+// ---------------------------------------------------------------------------
 
 fn emit_cursor_position(x: i32, y: i32) {
     let app = {
@@ -361,10 +503,15 @@ mod tests {
     use super::{
         classify_keyboard_message, classify_mouse_message, KeyboardHookDecision, MouseHookDecision,
     };
+    #[cfg(target_os = "windows")]
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{VK_ESCAPE, VK_SPACE};
+    #[cfg(target_os = "windows")]
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SYSKEYDOWN,
     };
+    #[cfg(target_os = "linux")]
+    use crate::x11::vkcodes::{VK_ESCAPE, VK_SPACE, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN,
+        WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SYSKEYDOWN};
 
     #[test]
     fn right_button_down_picks_and_exits_without_shift() {

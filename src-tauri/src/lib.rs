@@ -16,6 +16,8 @@ mod overlay;
 mod ui_commands;
 mod updates;
 mod window_lifecycle;
+#[cfg(target_os = "linux")]
+mod x11;
 
 pub use crate::app_state::ClickerStatusPayload;
 pub use crate::app_state::{ClickerState, IconState};
@@ -125,7 +127,7 @@ fn create_main_window(app: &tauri::App) -> tauri::Result<()> {
         builder = builder.data_directory(dir);
     }
 
-    let window = builder.build()?;
+    let _window = builder.build()?;
 
     // Re-apply the window icon once the window is registered with the taskbar
     // (first focus/resize), because Explorer may have cached the EXE icon into
@@ -134,7 +136,7 @@ fn create_main_window(app: &tauri::App) -> tauri::Result<()> {
     {
         let applied = std::sync::atomic::AtomicBool::new(false);
         let handle = app.handle().clone();
-        window.on_window_event(move |event| {
+        _window.on_window_event(move |event| {
             let fire = matches!(
                 event,
                 tauri::WindowEvent::Focused(true) | tauri::WindowEvent::Resized(_)
@@ -181,6 +183,7 @@ fn setup_panic_hook() {
 
         crate::diagnostics::write_panic_report(&report);
 
+        #[cfg(target_os = "windows")]
         unsafe {
             use windows_sys::Win32::UI::WindowsAndMessaging::MessageBoxW;
             use windows_sys::Win32::UI::WindowsAndMessaging::MB_ICONERROR;
@@ -509,7 +512,7 @@ pub fn run() {
                     std::process::exit(1);
                 } else {
                     let msg = format!(
-                        "The application window could not be created.\n\n{0}\n\nIf reinstalling the app does not help, please report the issue at:\nhttps://github.com/Blur009/Blur-AutoClicker/issues",
+                        "The application window could not be created.\n\n{0}\n\nIf reinstalling the app does not help, please report the issue at:\nhttps://github.com/21dudeman/Blur-AutoClicker-arch/issues",
                         e
                     );
                     crate::portable::notify_fatal_error(&msg);

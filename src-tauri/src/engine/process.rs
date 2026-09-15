@@ -1,32 +1,39 @@
 use super::ClickerConfig;
 use std::collections::HashMap;
+#[cfg(target_os = "windows")]
 use std::io::Cursor;
 use std::sync::Mutex;
 use std::sync::OnceLock;
 
 use crate::error::poisoned_inner;
+
+#[cfg(target_os = "windows")]
 use windows_sys::Win32::Foundation::{CloseHandle, HWND, INVALID_HANDLE_VALUE, LPARAM};
+#[cfg(target_os = "windows")]
 use windows_sys::Win32::Graphics::Gdi::{
     CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetObjectW, SelectObject, BITMAP,
     BITMAPINFO, BITMAPINFOHEADER, DIB_RGB_COLORS,
 };
+#[cfg(target_os = "windows")]
 use windows_sys::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
 };
+#[cfg(target_os = "windows")]
 use windows_sys::Win32::System::Threading::OpenProcess;
+#[cfg(target_os = "windows")]
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_MENU, VK_TAB};
+#[cfg(target_os = "windows")]
 use windows_sys::Win32::UI::Shell::ExtractIconExW;
+#[cfg(target_os = "windows")]
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     DestroyIcon, DrawIconEx, EnumWindows, GetClassNameW, GetForegroundWindow, GetIconInfo,
     GetWindowTextW, GetWindowThreadProcessId, ICONINFO,
 };
 
+#[cfg(target_os = "windows")]
 use image::ImageEncoder;
 
-const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
-const DI_NORMAL: u32 = 0x0003;
-const PROCESS_DISPLAY_TITLE_MAX_CHARS: usize = 35;
-
+#[cfg(target_os = "windows")]
 extern "system" {
     fn QueryFullProcessImageNameW(
         hProcess: *mut std::ffi::c_void,
@@ -35,6 +42,13 @@ extern "system" {
         lpdwSize: *mut u32,
     ) -> i32;
 }
+
+const PROCESS_DISPLAY_TITLE_MAX_CHARS: usize = 35;
+
+#[cfg(target_os = "windows")]
+const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+#[cfg(target_os = "windows")]
+const DI_NORMAL: u32 = 0x0003;
 
 #[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -50,6 +64,46 @@ fn icon_cache() -> &'static Mutex<HashMap<String, Option<String>>> {
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+fn encode_base64(data: &[u8]) -> String {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD.encode(data)
+}
+
+fn truncate_title_for_display(title: &str) -> String {
+    match title.char_indices().nth(PROCESS_DISPLAY_TITLE_MAX_CHARS) {
+        Some((idx, _)) => title[..idx].to_string(),
+        None => title.to_string(),
+    }
+}
+
+fn prefer_titled_pid(existing: u32, candidate: u32, has_title: impl Fn(u32) -> bool) -> u32 {
+    if !has_title(existing) && has_title(candidate) {
+        candidate
+    } else {
+        existing
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub fn normalize_process_name(name: &str) -> String {
+    name.trim().to_lowercase()
+}
+
+#[cfg(target_os = "windows")]
+pub fn normalize_process_name(name: &str) -> String {
+    let name = name.trim().to_lowercase();
+    if name.ends_with(".exe") {
+        name
+    } else {
+        format!("{}.exe", name)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Windows-specific process/icon helpers
+// ---------------------------------------------------------------------------
+
+#[cfg(target_os = "windows")]
 fn get_process_exe_path(pid: u32) -> Option<String> {
     unsafe {
         let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
@@ -67,11 +121,7 @@ fn get_process_exe_path(pid: u32) -> Option<String> {
     }
 }
 
-fn encode_base64(data: &[u8]) -> String {
-    use base64::Engine;
-    base64::engine::general_purpose::STANDARD.encode(data)
-}
-
+#[cfg(target_os = "windows")]
 fn extract_icon_pixels(exe_path: &str) -> Option<(Vec<u8>, u32, u32)> {
     unsafe {
         let wide: Vec<u16> = exe_path.encode_utf16().chain(Some(0)).collect();
@@ -159,6 +209,7 @@ fn extract_icon_pixels(exe_path: &str) -> Option<(Vec<u8>, u32, u32)> {
     }
 }
 
+#[cfg(target_os = "windows")]
 fn extract_process_icon_base64(exe_path: &str) -> Option<String> {
     let (pixels, w, h) = extract_icon_pixels(exe_path)?;
     let mut rgba = pixels;
@@ -174,6 +225,7 @@ fn extract_process_icon_base64(exe_path: &str) -> Option<String> {
     Some(format!("data:image/png;base64,{}", b64))
 }
 
+#[cfg(target_os = "windows")]
 fn get_icon_for_process(exe_name: &str, pid: u32) -> Option<String> {
     {
         let cache = icon_cache().lock().unwrap_or_else(poisoned_inner);
@@ -187,20 +239,13 @@ fn get_icon_for_process(exe_name: &str, pid: u32) -> Option<String> {
     icon
 }
 
-pub fn normalize_process_name(name: &str) -> String {
-    let name = name.trim().to_lowercase();
-    if name.ends_with(".exe") {
-        name
-    } else {
-        format!("{}.exe", name)
-    }
-}
-
+#[cfg(target_os = "windows")]
 fn wide_array_to_string(wide: &[u16]) -> String {
     let len = wide.iter().position(|&c| c == 0).unwrap_or(wide.len());
     String::from_utf16_lossy(&wide[..len])
 }
 
+#[cfg(target_os = "windows")]
 fn get_process_name_from_pid(target_pid: u32) -> Option<String> {
     let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
     if snapshot == INVALID_HANDLE_VALUE {
@@ -224,10 +269,12 @@ fn get_process_name_from_pid(target_pid: u32) -> Option<String> {
     result
 }
 
+#[cfg(target_os = "windows")]
 struct BuildWindowMap {
     map: HashMap<u32, String>,
 }
 
+#[cfg(target_os = "windows")]
 unsafe extern "system" fn enum_window_title_proc(hwnd: HWND, lparam: LPARAM) -> i32 {
     let state = &mut *(lparam as *mut BuildWindowMap);
     let mut pid: u32 = 0;
@@ -250,6 +297,7 @@ unsafe extern "system" fn enum_window_title_proc(hwnd: HWND, lparam: LPARAM) -> 
     1
 }
 
+#[cfg(target_os = "windows")]
 fn build_pid_title_map() -> HashMap<u32, String> {
     let mut state = BuildWindowMap {
         map: HashMap::new(),
@@ -260,13 +308,7 @@ fn build_pid_title_map() -> HashMap<u32, String> {
     state.map
 }
 
-fn truncate_title_for_display(title: &str) -> String {
-    match title.char_indices().nth(PROCESS_DISPLAY_TITLE_MAX_CHARS) {
-        Some((idx, _)) => title[..idx].to_string(),
-        None => title.to_string(),
-    }
-}
-
+#[cfg(target_os = "windows")]
 pub fn get_foreground_process_name() -> Option<String> {
     let hwnd = unsafe { GetForegroundWindow() };
     if hwnd.is_null() {
@@ -280,14 +322,7 @@ pub fn get_foreground_process_name() -> Option<String> {
     get_process_name_from_pid(pid)
 }
 
-fn prefer_titled_pid(existing: u32, candidate: u32, has_title: impl Fn(u32) -> bool) -> u32 {
-    if !has_title(existing) && has_title(candidate) {
-        candidate
-    } else {
-        existing
-    }
-}
-
+#[cfg(target_os = "windows")]
 pub fn list_running_processes() -> Vec<ProcessInfo> {
     let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
     if snapshot == INVALID_HANDLE_VALUE {
@@ -340,30 +375,11 @@ pub fn list_running_processes() -> Vec<ProcessInfo> {
     result
 }
 
-pub fn check_process_list(config: &ClickerConfig) -> Option<()> {
-    if !config.process_list_enabled {
-        return None;
-    }
-    let current = get_foreground_process_name()?.to_lowercase();
-    let matching_entry = config
-        .process_list_entries
-        .iter()
-        .find(|e| e.enabled && e.name == current);
-    let is_in_list = matching_entry.is_some();
-    let triggered = match config.process_list_mode {
-        super::ProcessListMode::Whitelist => !is_in_list,
-        super::ProcessListMode::Blacklist => is_in_list,
-    };
-    if triggered {
-        Some(())
-    } else {
-        None
-    }
-}
-
+#[cfg(target_os = "windows")]
 const TASK_SWITCHER_CLASSES: &[&str] =
     &["TaskSwitcherWnd", "TaskViewWindow", "WindowsSwitchWindow"];
 
+#[cfg(target_os = "windows")]
 pub fn is_task_switcher_active() -> bool {
     let hwnd = unsafe { GetForegroundWindow() };
     if !hwnd.is_null() {
@@ -388,6 +404,7 @@ pub fn is_task_switcher_active() -> bool {
     alt_down && tab_down
 }
 
+#[cfg(target_os = "windows")]
 pub fn is_process_running(name: &str) -> bool {
     let target = normalize_process_name(name);
     let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
@@ -411,6 +428,252 @@ pub fn is_process_running(name: &str) -> bool {
     }
     unsafe { CloseHandle(snapshot) };
     found
+}
+
+// ---------------------------------------------------------------------------
+// Linux-specific helpers
+// ---------------------------------------------------------------------------
+
+#[cfg(target_os = "linux")]
+fn proc_comm(pid: u32) -> Option<String> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/comm")).ok()?;
+    let name = stat.trim().to_string();
+    if name.is_empty() || name.starts_with('[') {
+        return None;
+    }
+    Some(name)
+}
+
+#[cfg(target_os = "linux")]
+fn find_icon_for_process(comm: &str) -> Option<String> {
+    // Lightweight XDG .desktop → icon lookup.
+    let cache = icon_cache().lock().unwrap_or_else(poisoned_inner);
+    if let Some(entry) = cache.get(comm) {
+        return entry.clone();
+    }
+    drop(cache); // release lock while searching filesystem
+
+    let desktop_dirs = [
+        dirs::data_dir()
+            .map(|p| p.join("applications"))
+            .unwrap_or_default(),
+        dirs::data_local_dir()
+            .map(|p| p.join("applications"))
+            .unwrap_or_default(),
+        std::path::PathBuf::from("/usr/share/applications"),
+        std::path::PathBuf::from("/usr/local/share/applications"),
+    ];
+    let desktop_dirs: Vec<std::path::PathBuf> = desktop_dirs
+        .into_iter()
+        .filter(|p| p.is_dir())
+        .collect();
+
+    let icon_dirs = [
+        dirs::home_dir().map(|p| p.join(".local/share/icons")),
+        Some(std::path::PathBuf::from("/usr/share/icons")),
+        Some(std::path::PathBuf::from("/usr/share/pixmaps")),
+    ];
+
+    let mut icon_name: Option<String> = None;
+    'outer: for dir in &desktop_dirs {
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|e| e.to_str()) != Some("desktop") {
+                    continue;
+                }
+                let Ok(text) = std::fs::read_to_string(&path) else {
+                    continue;
+                };
+                for line in text.lines() {
+                    if let Some(exec) = line.strip_prefix("Exec=") {
+                        let exec_name = exec
+                            .split_whitespace()
+                            .next()
+                            .unwrap_or("")
+                            .rsplit('/')
+                            .next()
+                            .unwrap_or("")
+                            .strip_suffix(".desktop")
+                            .unwrap_or("");
+                        let exec_stem = exec_name;
+                        if exec_stem == comm {
+                            for line2 in text.lines() {
+                                if let Some(icon) = line2.strip_prefix("Icon=") {
+                                    let icon_val = icon.trim().to_string();
+                                    if !icon_val.is_empty() {
+                                        icon_name = Some(icon_val);
+                                        break 'outer;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let icon_name = match icon_name {
+        Some(n) => n,
+        None => {
+            let mut cache = icon_cache().lock().unwrap_or_else(poisoned_inner);
+            cache.insert(comm.to_string(), None);
+            return None;
+        }
+    };
+
+    // Resolve icon_name → .png file path.
+    let mut found_path: Option<std::path::PathBuf> = None;
+    if let Some(ref icons_base) = icon_dirs[0] {
+        if let Some(ref hicolor) = icon_dirs[1] {
+            for subdir in &["48x48", "64x64", "128x128", "32x32", "scalable"] {
+                let candidate = hicolor.join(subdir).join("apps").join(format!("{icon_name}.png"));
+                if candidate.is_file() {
+                    found_path = Some(candidate);
+                    break;
+                }
+            }
+        }
+        if found_path.is_none() {
+            let pixmaps = icons_base.join(format!("{icon_name}.png"));
+            if pixmaps.is_file() {
+                found_path = Some(pixmaps);
+            }
+        }
+    }
+    if found_path.is_none() {
+        for icon_dir in &icon_dirs {
+            if let Some(base) = icon_dir {
+                for walk in walkdir::WalkDir::new(base)
+                    .max_depth(4)
+                    .into_iter()
+                    .filter_map(|e| e.ok())
+                {
+                    if walk.path().file_name().and_then(|f| f.to_str()) == Some(&format!("{icon_name}.png").as_str())
+                        && walk.path().is_file()
+                    {
+                        found_path = Some(walk.into_path());
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    let data_uri = found_path.and_then(|path| {
+        let bytes = std::fs::read(&path).ok()?;
+        if bytes.len() < 4 || &bytes[..4] != b"\x89PNG" {
+            return None; // only accept valid PNGs
+        }
+        let b64 = encode_base64(&bytes);
+        Some(format!("data:image/png;base64,{}", b64))
+    });
+
+    let mut cache = icon_cache().lock().unwrap_or_else(poisoned_inner);
+    cache.insert(comm.to_string(), data_uri.clone());
+    data_uri
+}
+
+#[cfg(target_os = "linux")]
+pub fn get_foreground_process_name() -> Option<String> {
+    let pid = crate::x11::active_window_pid()?;
+    proc_comm(pid).map(|n| n.to_lowercase())
+}
+
+#[cfg(target_os = "linux")]
+pub fn list_running_processes() -> Vec<ProcessInfo> {
+    let pid_title_map = crate::x11::pid_title_map();
+    let mut unique_processes: HashMap<String, u32> = HashMap::new();
+
+    if let Ok(procs) = std::fs::read_dir("/proc") {
+        for entry in procs.flatten() {
+            let name = entry.file_name();
+            let Some(pid) = name.to_str().and_then(|s| s.parse::<u32>().ok()) else {
+                continue;
+            };
+            if let Some(comm) = proc_comm(pid) {
+                let lower = comm.to_lowercase();
+                unique_processes
+                    .entry(lower)
+                    .and_modify(|existing| {
+                        *existing =
+                            prefer_titled_pid(*existing, pid, |p| pid_title_map.contains_key(&p));
+                    })
+                    .or_insert(pid);
+            }
+        }
+    }
+
+    let mut result: Vec<ProcessInfo> = unique_processes
+        .into_iter()
+        .filter_map(|(name, pid)| {
+            let title = pid_title_map.get(&pid)?;
+            let display_name = truncate_title_for_display(title);
+            let icon = find_icon_for_process(&name);
+            Some(ProcessInfo {
+                name,
+                display_name,
+                pid,
+                icon_base64: icon,
+            })
+        })
+        .collect();
+    result.sort_by(|a, b| {
+        a.display_name
+            .to_lowercase()
+            .cmp(&b.display_name.to_lowercase())
+    });
+    result
+}
+
+#[cfg(target_os = "linux")]
+pub fn is_task_switcher_active() -> bool {
+    crate::x11::alt_down() && crate::x11::is_key_name_pressed("Tab")
+}
+
+#[cfg(target_os = "linux")]
+pub fn is_process_running(name: &str) -> bool {
+    let target = normalize_process_name(name);
+    let Ok(procs) = std::fs::read_dir("/proc") else {
+        return false;
+    };
+    for entry in procs.flatten() {
+        let Some(pid) = entry.file_name().to_str().and_then(|s| s.parse::<u32>().ok()) else {
+            continue;
+        };
+        if let Some(comm) = proc_comm(pid) {
+            if comm.to_lowercase() == target {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+// ---------------------------------------------------------------------------
+// Shared logic
+// ---------------------------------------------------------------------------
+
+pub fn check_process_list(config: &ClickerConfig) -> Option<()> {
+    if !config.process_list_enabled {
+        return None;
+    }
+    let current = get_foreground_process_name()?.to_lowercase();
+    let matching_entry = config
+        .process_list_entries
+        .iter()
+        .find(|e| e.enabled && e.name == current);
+    let is_in_list = matching_entry.is_some();
+    let triggered = match config.process_list_mode {
+        super::ProcessListMode::Whitelist => !is_in_list,
+        super::ProcessListMode::Blacklist => is_in_list,
+    };
+    if triggered {
+        Some(())
+    } else {
+        None
+    }
 }
 
 #[cfg(test)]
