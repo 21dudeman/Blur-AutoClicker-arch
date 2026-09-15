@@ -463,10 +463,8 @@ fn find_icon_for_process(comm: &str) -> Option<String> {
         std::path::PathBuf::from("/usr/share/applications"),
         std::path::PathBuf::from("/usr/local/share/applications"),
     ];
-    let desktop_dirs: Vec<std::path::PathBuf> = desktop_dirs
-        .into_iter()
-        .filter(|p| p.is_dir())
-        .collect();
+    let desktop_dirs: Vec<std::path::PathBuf> =
+        desktop_dirs.into_iter().filter(|p| p.is_dir()).collect();
 
     let icon_dirs = [
         dirs::home_dir().map(|p| p.join(".local/share/icons")),
@@ -528,7 +526,10 @@ fn find_icon_for_process(comm: &str) -> Option<String> {
     if let Some(ref icons_base) = icon_dirs[0] {
         if let Some(ref hicolor) = icon_dirs[1] {
             for subdir in &["48x48", "64x64", "128x128", "32x32", "scalable"] {
-                let candidate = hicolor.join(subdir).join("apps").join(format!("{icon_name}.png"));
+                let candidate = hicolor
+                    .join(subdir)
+                    .join("apps")
+                    .join(format!("{icon_name}.png"));
                 if candidate.is_file() {
                     found_path = Some(candidate);
                     break;
@@ -550,7 +551,8 @@ fn find_icon_for_process(comm: &str) -> Option<String> {
                     .into_iter()
                     .filter_map(|e| e.ok())
                 {
-                    if walk.path().file_name().and_then(|f| f.to_str()) == Some(&format!("{icon_name}.png").as_str())
+                    if walk.path().file_name().and_then(|f| f.to_str())
+                        == Some(&format!("{icon_name}.png").as_str())
                         && walk.path().is_file()
                     {
                         found_path = Some(walk.into_path());
@@ -639,7 +641,11 @@ pub fn is_process_running(name: &str) -> bool {
         return false;
     };
     for entry in procs.flatten() {
-        let Some(pid) = entry.file_name().to_str().and_then(|s| s.parse::<u32>().ok()) else {
+        let Some(pid) = entry
+            .file_name()
+            .to_str()
+            .and_then(|s| s.parse::<u32>().ok())
+        else {
             continue;
         };
         if let Some(comm) = proc_comm(pid) {

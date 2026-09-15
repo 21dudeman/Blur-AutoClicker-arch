@@ -1,0 +1,97 @@
+name: Sync from upstream
+
+on:
+  schedule:
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: '0'
+
+      - name: Fetch upstream
+        run: |
+          git remote add upstream https://github.com/Blur009/Blur-AutoClicker.git
+          git fetch upstream --tags --prune
+
+      - name: Get latest versions
+        id: versions
+        run: |
+          UP=$(curl -s https://api.github.com/repos/Blur009/Blur-AutoClicker/releases/latest | jq -r .tag_name)
+          OURS=$(curl -s https://api.github.com/repos/21dudeman/Blur-AutoClicker-arch/releases/latest | jq -r .tag_name)
+          echo "upstream=$UP"
+          echo "ours=$OURS"
+          echo "upstream=$UP" >> "$GITHUB_OUTPUT"
+          echo "ours=$OURS" >> "$GITHUB_OUTPUT"
+          NEWEST=$(printf '%s\n%s\n' "$UP" "$OURS" | sort -V | tail -1)
+          echo "newest=$NEWEST" >> "$GITHUB_OUTPUT"
+
+      - name: Compare versions
+        id: compare
+        run: |
+          if [ "${{ steps.versions.outputs.newest }}" = "${{ steps.versions.outputs.ours }}" ]; then
+            echo "No new upstream release (ours=${{ steps.versions.outputs.ours }})"
+            echo "needs_sync=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "New upstream release: ${{ steps.versions.outputs.upstream }}"
+            echo "needs_sync=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Attempt merge of upstream
+        id: merge
+        if: steps.compare.outputs.needs_sync == 'true'
+        run: |
+          if git merge --no-edit upstream/main; then
+            echo "Merged upstream/main cleanly"
+            echo "clean=true" >> "$GITHUB_OUTPUT"
+          else
+            git merge --abort
+            echo "CONFLICT: upstream/main does not merge cleanly"
+            echo "clean=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Bump version files
+        if: steps.compare.outputs.needs_sync == 'true' && steps.merge.outputs.clean == 'true'
+        run: |
+          TAG="${{ steps.versions.outputs.upstream }}"
+          VER="${TAG#v}"
+          sed -i "0,/\"version\": \"[^\"]*\"/s//\"version\": \"$VER\"/" package.json
+          sed -i "0,/\"version\": \"[^\"]*\"/s//\"version\": \"$VER\"/" src-tauri/tauri.conf.json
+          sed -i "0,/^version = \".*\"/s//version = \"$VER\"/" src-tauri/Cargo.toml
+          sed -i "1,/^version = \".*\"/s//version = \"$VER\"/" src-tauri/Cargo.lock
+
+      - name: Open sync PR
+        id: syncpr
+        if: steps.compare.outputs.needs_sync == 'true' && steps.merge.outputs.clean == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b sync/upstream-${{ steps.versions.outputs.upstream }}
+          git add -A
+          git commit -m "sync: merge upstream ${{ steps.versions.outputs.upstream }}"
+          git push -f origin sync/upstream-${{ steps.versions.outputs.upstream }}
+          BRANCH="sync/upstream-${{ steps.versions.outputs.upstream }}"
+          gh pr create \
+            --base main \
+            --head "$BRANCH" \
+            --title "Sync with upstream ${{ steps.versions.outputs.upstream }}" \
+            --body "**Upstream released ${{ steps.versions.outputs.upstream }}.** This PR merges it and bumps the version to ${{ steps.versions.outputs.upstream }}."
+
+      - name: Open sync-needed issue
+        if: steps.compare.outputs.needs_sync == 'true' && steps.merge.outputs.clean == 'false'
+        run: |
+          gh issue create \
+            --title "Upstream released ${{ steps.versions.outputs.upstream }} - needs manual port" \
+            --body "**Upstream released ${{ steps.versions.outputs.upstream }}** but it does not merge cleanly into this Linux fork (expected - upstream is Windows-first). Merge/rebase manually, fix Linux-specific files, then cut a tag to release:
+
+            \`git tag ${{ steps.versions.outputs.upstream }} && git push origin ${{ steps.versions.outputs.upstream }}\`"

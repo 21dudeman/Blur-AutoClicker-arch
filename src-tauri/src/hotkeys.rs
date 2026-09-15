@@ -16,6 +16,8 @@ use tauri::Manager;
 
 #[cfg(target_os = "windows")]
 use crate::engine::AUTOCLICKER_EXTRA_INFO;
+#[cfg(target_os = "linux")]
+use crate::x11::vkcodes::*;
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::Foundation::{GetLastError, LRESULT, POINT};
 #[cfg(target_os = "windows")]
@@ -30,8 +32,6 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_QUIT, WM_RBUTTONDOWN, WM_RBUTTONUP,
     WM_SYSKEYDOWN, WM_XBUTTONDOWN, WM_XBUTTONUP,
 };
-#[cfg(target_os = "linux")]
-use crate::x11::vkcodes::*;
 
 const POLL_INTERVAL: Duration = Duration::from_millis(4);
 
@@ -549,14 +549,10 @@ fn poll_hotkey_iteration(app: &AppHandle, ctx: &mut HotkeyPollCtx) {
     }
 
     let suppress_until = state.suppress_hotkey_until_ms.load(Ordering::SeqCst);
-    let suppress_until_release = state
-        .suppress_hotkey_until_release
-        .load(Ordering::SeqCst);
+    let suppress_until_release = state.suppress_hotkey_until_release.load(Ordering::SeqCst);
     let hotkey_capture_active = state.hotkey_capture_active.load(Ordering::SeqCst);
     let click_point_pick_active = state.click_point_pick_active.load(Ordering::SeqCst);
-    let custom_stop_zone_pick_active = state
-        .custom_stop_zone_pick_active
-        .load(Ordering::SeqCst);
+    let custom_stop_zone_pick_active = state.custom_stop_zone_pick_active.load(Ordering::SeqCst);
 
     if hotkey_capture_active || click_point_pick_active || custom_stop_zone_pick_active {
         if currently_pressed && !ctx.was_pressed && hotkey_capture_active {
@@ -595,10 +591,8 @@ fn poll_hotkey_iteration(app: &AppHandle, ctx: &mut HotkeyPollCtx) {
         return;
     }
 
-    let suppress_mouse_on_own_window = binding
-        .as_ref()
-        .is_some_and(is_mouse_hotkey_binding)
-        && is_cursor_over_own_window();
+    let suppress_mouse_on_own_window =
+        binding.as_ref().is_some_and(is_mouse_hotkey_binding) && is_cursor_over_own_window();
 
     if currently_pressed && !ctx.was_pressed {
         if suppress_mouse_on_own_window {

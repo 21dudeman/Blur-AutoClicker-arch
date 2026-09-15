@@ -82,12 +82,17 @@ fn thread_cycles() -> u64 {
     // Nanoseconds of CPU time consumed by the calling thread, mirroring the
     // per-thread semantics of the Windows QueryThreadCycleTime path. Enables
     // accurate cycle-frequency calibration and CPU-usage accounting.
-    let mut ts = LinuxTimespec { tv_sec: 0, tv_nsec: 0 };
+    let mut ts = LinuxTimespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
     let status = unsafe { clock_gettime(CLOCK_THREAD_CPUTIME_ID, &mut ts) };
     if status != 0 {
         return 0;
     }
-    (ts.tv_sec as u64).saturating_mul(1_000_000_000).saturating_add(ts.tv_nsec as u64)
+    (ts.tv_sec as u64)
+        .saturating_mul(1_000_000_000)
+        .saturating_add(ts.tv_nsec as u64)
 }
 
 impl ClickerConfig {

@@ -80,8 +80,11 @@ extern "C" {
     fn XFetchName(display: *mut Display, w: Window, window_name_return: *mut *mut c_char) -> c_int;
     fn XKeycodeToKeysym(display: *mut Display, keycode: KeyCode, index: c_int) -> KeySym;
     fn XGetKeyboardControl(display: *mut Display, keyboard_state: *mut XKeyboardState) -> c_int;
-    fn XGetInputFocus(display: *mut Display, focus_return: *mut Window, revert_to_return: *mut c_int)
-        -> c_int;
+    fn XGetInputFocus(
+        display: *mut Display,
+        focus_return: *mut Window,
+        revert_to_return: *mut c_int,
+    ) -> c_int;
     fn XQueryTree(
         display: *mut Display,
         w: Window,
@@ -236,10 +239,8 @@ fn display_ptr() -> *mut Display {
     // internal global state races across the GUI thread and our poll/inject
     // threads. XInitThreads is idempotent but we run it exactly once.
     static INIT: std::sync::Once = std::sync::Once::new();
-    INIT.call_once(|| {
-        unsafe {
-            XInitThreads();
-        }
+    INIT.call_once(|| unsafe {
+        XInitThreads();
     });
     DISPLAY.with(|slot| {
         let mut g = match slot.lock() {
@@ -317,17 +318,17 @@ fn vk_to_keysym(vk: u16) -> KeySym {
         VK_RMENU => XK_Alt_R,
         VK_LWIN => XK_Super_L,
         VK_RWIN => XK_Super_R,
-        VK_OEM_1 => 0x3b, // ;:
-        VK_OEM_PLUS => 0x3d, // =+
-        VK_OEM_COMMA => 0x2c, // ,<
-        VK_OEM_MINUS => 0x2d, // -_
-        VK_OEM_PERIOD => 0x2e, // .>
-        VK_OEM_2 => 0x2f, // /?
-        VK_OEM_3 => 0x60, // `~
-        VK_OEM_4 => 0x5b, // [{
-        VK_OEM_5 => 0x5c, // \|
-        VK_OEM_6 => 0x5d, // ]}
-        VK_OEM_7 => 0x27, // '"
+        VK_OEM_1 => 0x3b,                 // ;:
+        VK_OEM_PLUS => 0x3d,              // =+
+        VK_OEM_COMMA => 0x2c,             // ,<
+        VK_OEM_MINUS => 0x2d,             // -_
+        VK_OEM_PERIOD => 0x2e,            // .>
+        VK_OEM_2 => 0x2f,                 // /?
+        VK_OEM_3 => 0x60,                 // `~
+        VK_OEM_4 => 0x5b,                 // [{
+        VK_OEM_5 => 0x5c,                 // \|
+        VK_OEM_6 => 0x5d,                 // ]}
+        VK_OEM_7 => 0x27,                 // '"
         VK_OEM_8 | VK_OEM_102 => XK_less, // IntlBackslash
         _ => 0,
     }
@@ -418,15 +419,7 @@ pub fn cursor_position() -> Option<(i32, i32)> {
     let mut cw: Window = 0;
     let ok = unsafe {
         XQueryPointer(
-            d,
-            root,
-            &mut rw,
-            &mut cw,
-            &mut rx,
-            &mut ry,
-            &mut wx,
-            &mut wy,
-            &mut mask,
+            d, root, &mut rw, &mut cw, &mut rx, &mut ry, &mut wx, &mut wy, &mut mask,
         )
     };
     if ok == 0 {
@@ -451,15 +444,7 @@ pub fn pointer_button_mask() -> c_uint {
     let mut mask: c_uint = 0;
     unsafe {
         XQueryPointer(
-            d,
-            root,
-            &mut rw,
-            &mut cw,
-            &mut rx,
-            &mut ry,
-            &mut wx,
-            &mut wy,
-            &mut mask,
+            d, root, &mut rw, &mut cw, &mut rx, &mut ry, &mut wx, &mut wy, &mut mask,
         )
     };
     mask
@@ -495,7 +480,12 @@ pub fn monitor_rects() -> Option<Vec<(i32, i32, usize, usize)>> {
             for i in 0..count as isize {
                 let info = unsafe { &*infos.offset(i) };
                 if info.width > 0 && info.height > 0 {
-                    rects.push((info.x_org, info.y_org, info.width as usize, info.height as usize));
+                    rects.push((
+                        info.x_org,
+                        info.y_org,
+                        info.width as usize,
+                        info.height as usize,
+                    ));
                 }
             }
             unsafe { XFree(infos as *mut c_void) };
@@ -847,7 +837,11 @@ pub fn active_window() -> Option<Window> {
     }
     let net_active = intern_atom("_NET_ACTIVE_WINDOW");
     let values = get_32bit_values(root, net_active)?;
-    values.first().copied().filter(|&w| w != 0 && w != 1).map(|w| w as Window)
+    values
+        .first()
+        .copied()
+        .filter(|&w| w != 0 && w != 1)
+        .map(|w| w as Window)
 }
 
 pub fn active_window_pid() -> Option<u32> {
@@ -879,7 +873,9 @@ pub fn pid_title_map() -> std::collections::HashMap<u32, String> {
     }
     for w in windows {
         let Some(pid) = window_pid(w) else { continue };
-        let Some(title) = window_title(w) else { continue };
+        let Some(title) = window_title(w) else {
+            continue;
+        };
         let better = match map.get(&pid) {
             None => true,
             Some(existing) => {
@@ -921,15 +917,7 @@ fn pointer_child_window() -> Option<Window> {
     let mut mask: c_uint = 0;
     unsafe {
         XQueryPointer(
-            d,
-            root,
-            &mut rw,
-            &mut child,
-            &mut rx,
-            &mut ry,
-            &mut wx,
-            &mut wy,
-            &mut mask,
+            d, root, &mut rw, &mut child, &mut rx, &mut ry, &mut wx, &mut wy, &mut mask,
         )
     };
     if child == 0 {
@@ -1008,15 +996,7 @@ pub fn pointer_over_own_window() -> bool {
         let mut mask: c_uint = 0;
         unsafe {
             XQueryPointer(
-                d,
-                window,
-                &mut rw,
-                &mut child,
-                &mut cx,
-                &mut cy,
-                &mut wx,
-                &mut wy,
-                &mut mask,
+                d, window, &mut rw, &mut child, &mut cx, &mut cy, &mut wx, &mut wy, &mut mask,
             )
         };
         if child == 0 || child == window {

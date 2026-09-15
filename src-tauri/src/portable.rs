@@ -241,13 +241,10 @@ mod tests {
 
     #[test]
     fn layout_resolves_under_exe_data() {
-        let exe_dir = std::path::Path::new(r"C:\apps\Blur");
-        let data = portable_data_dir_of(exe_dir);
-        assert_eq!(data, std::path::PathBuf::from(r"C:\apps\Blur\Data"));
+        let exe_dir = std::path::PathBuf::from(r"C:\apps\Blur");
+        let data = portable_data_dir_of(&exe_dir);
+        assert_eq!(data, exe_dir.join("Data"));
         let webview = webview_dir_of(&data, "main");
-        assert_eq!(
-            webview,
-            std::path::PathBuf::from(r"C:\apps\Blur\Data\EBWebView-main")
-        );
+        assert_eq!(webview, exe_dir.join("Data").join("EBWebView-main"));
     }
 }

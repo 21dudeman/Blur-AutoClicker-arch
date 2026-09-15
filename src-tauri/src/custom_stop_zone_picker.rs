@@ -255,11 +255,7 @@ pub fn start_custom_stop_zone_pick_inner(app: AppHandle) -> AppResult<()> {
                 .is_some();
 
             if drawing {
-                if let Some(start) = picker()
-                    .lock()
-                    .unwrap_or_else(poisoned_inner)
-                    .drawing_start
-                {
+                if let Some(start) = picker().lock().unwrap_or_else(poisoned_inner).drawing_start {
                     emit_preview(start, (pos.0, pos.1), false);
                 }
             } else {
@@ -527,6 +523,11 @@ mod tests {
         classify_keyboard_message, classify_mouse_message, normalize_rect,
         should_emit_drag_preview, KeyboardHookDecision, MouseHookDecision, StopZoneRect,
     };
+    #[cfg(target_os = "linux")]
+    use crate::x11::vkcodes::{
+        VK_ESCAPE, VK_SPACE, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_MOUSEMOVE, WM_RBUTTONDOWN,
+        WM_RBUTTONUP, WM_SYSKEYDOWN,
+    };
     #[cfg(target_os = "windows")]
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{VK_ESCAPE, VK_SPACE};
     #[cfg(target_os = "windows")]
@@ -534,9 +535,6 @@ mod tests {
         WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_MOUSEMOVE, WM_RBUTTONDOWN, WM_RBUTTONUP,
         WM_SYSKEYDOWN,
     };
-    #[cfg(target_os = "linux")]
-    use crate::x11::vkcodes::{VK_ESCAPE, VK_SPACE, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN,
-        WM_MOUSEMOVE, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SYSKEYDOWN};
 
     #[test]
     fn right_button_down_starts_drawing() {

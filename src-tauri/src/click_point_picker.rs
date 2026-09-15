@@ -503,15 +503,17 @@ mod tests {
     use super::{
         classify_keyboard_message, classify_mouse_message, KeyboardHookDecision, MouseHookDecision,
     };
+    #[cfg(target_os = "linux")]
+    use crate::x11::vkcodes::{
+        VK_ESCAPE, VK_SPACE, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_RBUTTONDOWN, WM_RBUTTONUP,
+        WM_SYSKEYDOWN,
+    };
     #[cfg(target_os = "windows")]
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{VK_ESCAPE, VK_SPACE};
     #[cfg(target_os = "windows")]
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SYSKEYDOWN,
     };
-    #[cfg(target_os = "linux")]
-    use crate::x11::vkcodes::{VK_ESCAPE, VK_SPACE, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN,
-        WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SYSKEYDOWN};
 
     #[test]
     fn right_button_down_picks_and_exits_without_shift() {

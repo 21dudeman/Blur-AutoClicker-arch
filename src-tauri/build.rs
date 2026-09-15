@@ -3,7 +3,9 @@ fn main() {
     if cfg!(target_os = "linux") {
         let has_x11 = pkg_config::probe_library("x11").is_ok();
         if !has_x11 {
-            panic!("libX11 development files not found. Install x11 headers (e.g. pacman -S libx11)");
+            panic!(
+                "libX11 development files not found. Install x11 headers (e.g. pacman -S libx11)"
+            );
         }
         let _ = pkg_config::probe_library("xtst");
         let _ = pkg_config::probe_library("xinerama");

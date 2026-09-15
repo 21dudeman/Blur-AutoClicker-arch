@@ -12,9 +12,7 @@ pub fn get_autostart_enabled() -> bool {
     }
     #[cfg(target_os = "linux")]
     {
-        autostart_file()
-            .as_ref()
-            .is_some_and(|path| path.exists())
+        autostart_file().as_ref().is_some_and(|path| path.exists())
     }
 }
 
@@ -81,8 +79,7 @@ fn autostart_file() -> Option<std::path::PathBuf> {
     let config_home = std::env::var_os("XDG_CONFIG_HOME")
         .map(std::path::PathBuf::from)
         .or_else(|| {
-            std::env::var_os("HOME")
-                .map(|home| std::path::Path::new(&home).join(".config"))
+            std::env::var_os("HOME").map(|home| std::path::Path::new(&home).join(".config"))
         })?;
     Some(
         config_home

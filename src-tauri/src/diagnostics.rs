@@ -129,11 +129,11 @@ mod tests {
 
     #[test]
     fn portable_layout_resolves_single_level() {
-        let exe_dir = std::path::Path::new(r"C:\apps\Blur");
-        let data = crate::portable::portable_data_dir_of(exe_dir);
+        let exe_dir = std::path::PathBuf::from(r"C:\apps\Blur");
+        let data = crate::portable::portable_data_dir_of(&exe_dir);
         assert_eq!(
             diagnostics_root_of(&data),
-            std::path::PathBuf::from(r"C:\apps\Blur\Data\Diagnostics")
+            exe_dir.join("Data").join("Diagnostics")
         );
     }
 
