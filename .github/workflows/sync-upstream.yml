@@ -78,12 +78,10 @@ jobs:
           MANUAL=''
           for f in $UNMERGED; do
             case "$f" in
-              src-tauri/Cargo.lock|package-lock.json)
+              src-tauri/Cargo.lock|package-lock.json|package.json)
+                # Keep our versions of generated files and the manifest; the
+                # version bump + lockfile reconciliation steps fix them up.
                 git checkout --ours -- "$f"
-                git add -- "$f"
-                AUTO="$AUTO $f" ;;
-              package.json)
-                git checkout --theirs -- "$f"
                 git add -- "$f"
                 AUTO="$AUTO $f" ;;
               *)
