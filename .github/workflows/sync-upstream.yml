@@ -7,91 +7,263 @@ on:
 
 permissions:
   contents: write
-  pull-requests: write
   issues: write
+  actions: write
+  pull-requests: write
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: true
 
 jobs:
   sync:
     runs-on: ubuntu-latest
+    timeout-minutes: 120
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: '0'
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Fetch upstream
         run: |
           git remote add upstream https://github.com/Blur009/Blur-AutoClicker.git
           git fetch upstream --tags --prune
 
-      - name: Get latest versions
+      - name: Determine latest versions
         id: versions
         run: |
-          UP=$(curl -s https://api.github.com/repos/Blur009/Blur-AutoClicker/releases/latest | jq -r .tag_name)
-          OURS=$(curl -s https://api.github.com/repos/21dudeman/Blur-AutoClicker-arch/releases/latest | jq -r .tag_name)
-          echo "upstream=$UP"
-          echo "ours=$OURS"
+          UP=$(curl -sS https://api.github.com/repos/Blur009/Blur-AutoClicker/releases/latest | jq -r .tag_name)
+          OURS=$(curl -sS https://api.github.com/repos/21dudeman/Blur-AutoClicker-arch/releases/latest | jq -r .tag_name)
+          # Normalize tags (accept vX.Y.Z or X.Y.Z, ignore non-release/empty)
+          clean_up=$(printf '%s' "$UP" | sed 's/^v//')
+          clean_ours=$(printf '%s' "$OURS" | sed 's/^v//')
+          echo "upstream raw: $UP"
+          echo "ours raw:     $OURS"
           echo "upstream=$UP" >> "$GITHUB_OUTPUT"
-          echo "ours=$OURS" >> "$GITHUB_OUTPUT"
-          NEWEST=$(printf '%s\n%s\n' "$UP" "$OURS" | sort -V | tail -1)
-          echo "newest=$NEWEST" >> "$GITHUB_OUTPUT"
-
-      - name: Compare versions
-        id: compare
-        run: |
-          if [ "${{ steps.versions.outputs.newest }}" = "${{ steps.versions.outputs.ours }}" ]; then
-            echo "No new upstream release (ours=${{ steps.versions.outputs.ours }})"
+          if [ -z "$UP" ] || [ "$UP" = "null" ] || [ -z "$clean_up" ]; then
+            echo "upstream tag unavailable - skipping this run"
+            echo "needs_sync=false" >> "$GITHUB_OUTPUT"
+          elif [ -n "$clean_ours" ] && [ "$clean_up" = "$clean_ours" ]; then
+            echo "Already at same version (ours=$UP)"
+            echo "needs_sync=false" >> "$GITHUB_OUTPUT"
+          elif [ -n "$clean_ours" ] && [ "$(printf '%s\n%s\n' "$clean_up" "$clean_ours" | sort -V | tail -1)" != "$clean_up" ]; then
+            echo "Upstream not newer (ours=$OURS, upstream=$UP)"
             echo "needs_sync=false" >> "$GITHUB_OUTPUT"
           else
-            echo "New upstream release: ${{ steps.versions.outputs.upstream }}"
+            echo "New upstream release: $UP"
             echo "needs_sync=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Attempt merge of upstream
+      - name: Merge upstream
         id: merge
-        if: steps.compare.outputs.needs_sync == 'true'
-        run: |
-          if git merge --no-edit upstream/main; then
-            echo "Merged upstream/main cleanly"
-            echo "clean=true" >> "$GITHUB_OUTPUT"
-          else
-            git merge --abort
-            echo "CONFLICT: upstream/main does not merge cleanly"
-            echo "clean=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Bump version files
-        if: steps.compare.outputs.needs_sync == 'true' && steps.merge.outputs.clean == 'true'
-        run: |
-          TAG="${{ steps.versions.outputs.upstream }}"
-          VER="${TAG#v}"
-          sed -i "0,/\"version\": \"[^\"]*\"/s//\"version\": \"$VER\"/" package.json
-          sed -i "0,/\"version\": \"[^\"]*\"/s//\"version\": \"$VER\"/" src-tauri/tauri.conf.json
-          sed -i "0,/^version = \".*\"/s//version = \"$VER\"/" src-tauri/Cargo.toml
-          sed -i "1,/^version = \".*\"/s//version = \"$VER\"/" src-tauri/Cargo.lock
-
-      - name: Open sync PR
-        id: syncpr
-        if: steps.compare.outputs.needs_sync == 'true' && steps.merge.outputs.clean == 'true'
+        if: steps.versions.outputs.needs_sync == 'true'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git checkout -b sync/upstream-${{ steps.versions.outputs.upstream }}
-          git add -A
-          git commit -m "sync: merge upstream ${{ steps.versions.outputs.upstream }}"
-          git push -f origin sync/upstream-${{ steps.versions.outputs.upstream }}
-          BRANCH="sync/upstream-${{ steps.versions.outputs.upstream }}"
-          gh pr create \
-            --base main \
-            --head "$BRANCH" \
-            --title "Sync with upstream ${{ steps.versions.outputs.upstream }}" \
-            --body "**Upstream released ${{ steps.versions.outputs.upstream }}.** This PR merges it and bumps the version to ${{ steps.versions.outputs.upstream }}."
+          UP="${{ steps.versions.outputs.upstream }}"
+          git checkout -b "sync/upstream-$UP"
+          if git merge --no-edit upstream/main; then
+            echo "merge=true" >> "$GITHUB_OUTPUT"
+            echo "clean=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Merge had conflicts: classify them.
+          UNMERGED=$(git diff --name-only --diff-filter=U)
+          echo "conflicted files:"
+          echo "$UNMERGED"
+          RESOLVED=1
+          AUTO=''
+          MANUAL=''
+          for f in $UNMERGED; do
+            case "$f" in
+              src-tauri/Cargo.lock|package-lock.json)
+                git checkout --ours -- "$f"
+                git add -- "$f"
+                AUTO="$AUTO $f" ;;
+              package.json)
+                git checkout --theirs -- "$f"
+                git add -- "$f"
+                AUTO="$AUTO $f" ;;
+              *)
+                RESOLVED=0
+                MANUAL="$MANUAL $f" ;;
+            esac
+          done
+          echo "auto_resolved:$AUTO"
+          echo "manual_needed:$MANUAL"
+          if [ "$RESOLVED" = "1" ]; then
+            git commit --no-edit
+            echo "merge=true" >> "$GITHUB_OUTPUT"
+            echo "clean=true" >> "$GITHUB_OUTPUT"
+          else
+            git merge --abort
+            git checkout -b "sync/upstream-$UP" 2>/dev/null || true
+            echo "merge=false" >> "$GITHUB_OUTPUT"
+            echo "clean=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "manual_files='$MANUAL'" >> "$GITHUB_OUTPUT"
 
-      - name: Open sync-needed issue
-        if: steps.compare.outputs.needs_sync == 'true' && steps.merge.outputs.clean == 'false'
+      - name: Open manual-sync issue
+        if: steps.versions.outputs.needs_sync == 'true' && steps.merge.outputs.merge == 'false'
         run: |
-          gh issue create \
-            --title "Upstream released ${{ steps.versions.outputs.upstream }} - needs manual port" \
-            --body "**Upstream released ${{ steps.versions.outputs.upstream }}** but it does not merge cleanly into this Linux fork (expected - upstream is Windows-first). Merge/rebase manually, fix Linux-specific files, then cut a tag to release:
+          UP="${{ steps.versions.outputs.upstream }}"
+          MANUAL="${{ steps.merge.outputs.manual_files }}"
+          gh issue create --repo "$GITHUB_REPOSITORY" \
+            --title "Upstream released $UP - needs manual port" \
+            --body "**Upstream released $UP** and could not be merged automatically (upstream is Windows-first; our fork is a Linux port).
 
-            \`git tag ${{ steps.versions.outputs.upstream }} && git push origin ${{ steps.versions.outputs.upstream }}\`"
+          Files needing manual attention: \`$MANUAL\`
+
+          Fix the conflicts on branch \`sync/upstream-$UP\`, push it, then release:
+              git fetch upstream
+              git push origin sync/upstream-$UP:main
+              git tag $UP && git push origin $UP
+          "
+
+      - name: Bump version files
+        if: steps.versions.outputs.needs_sync == 'true' && steps.merge.outputs.clean == 'true'
+        run: |
+          UP="${{ steps.versions.outputs.upstream }}"
+          VER="${UP#v}"
+          sed -i "0,/\"version\": \"[^\"]*\"/s//\"version\": \"$VER\"/" package.json
+          sed -i "0,/\"version\": \"[^\"]*\"/s//\"version\": \"$VER\"/" src-tauri/tauri.conf.json
+          sed -i "0,/^version = \".*\"/s//version = \"$VER\"/" src-tauri/Cargo.toml
+
+      - name: Install system dependencies
+        if: steps.versions.outputs.needs_sync == 'true' && steps.merge.outputs.clean == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libx11-dev \
+            libxtst-dev \
+            libxinerama-dev \
+            libssl-dev \
+            pkg-config \
+            build-essential
+
+      - uses: actions/setup-node@v4
+        if: steps.versions.outputs.needs_sync == 'true' && steps.merge.outputs.clean == 'true'
+        with:
+          node-version: 24
+
+      - name: Reconcile lockfiles
+        if: steps.versions.outputs.needs_sync == 'true' && steps.merge.outputs.clean == 'true'
+        run: |
+          # Regenerate both lockfiles from the merged manifests.
+          npm install
+          cargo update --manifest-path src-tauri/Cargo.toml
+          # Keep our pinned monorepo metadata consistent with the new version.
+          sed -i "0,/\"version\": \"[^\"]*\"/s//\"version\": \"${UP#v}\"/" package-lock.json
+
+      - name: Build frontend
+        if: steps.versions.outputs.needs_sync == 'true' && steps.merge.outputs.clean == 'true'
+        run: npm run frontend:build
+
+      - name: Verify before release
+        id: verify
+        if: steps.versions.outputs.needs_sync == 'true' && steps.merge.outputs.clean == 'true'
+        run: |
+          set +e
+          LOG=/tmp/verify.log
+          ok=1
+          run_check() {
+            local label="$1"; shift
+            echo "======== $label ========" >> "$LOG"
+            "$@" >> "$LOG" 2>&1
+            if [ $? -ne 0 ]; then
+              echo "======== $label FAILED ========" >> "$LOG"
+              ok=0
+            fi
+          }
+          run_check "cargo fmt --check" bash -c 'cd src-tauri && cargo fmt --check'
+          run_check "cargo check --locked" bash -c 'cd src-tauri && cargo check --locked'
+          run_check "cargo build --release --locked" bash -c 'cd src-tauri && cargo build --release --locked'
+          run_check "cargo test --locked" bash -c 'cd src-tauri && cargo test --locked'
+          run_check "cargo clippy --locked" bash -c 'cd src-tauri && cargo clippy --locked'
+          cargo install cargo-audit --locked > /dev/null 2>&1 || true
+          run_check "cargo audit" bash -c 'cd src-tauri && cargo audit'
+          if [ "$ok" = "1" ]; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+            echo "ALL VERIFICATION PASSED"
+          else
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+            echo "VERIFICATION FAILED"
+          fi
+
+      - name: Open verification-failed issue
+        if: steps.versions.outputs.needs_sync == 'true' && steps.merge.outputs.clean == 'true' && steps.verify.outputs.ok == 'false'
+        run: |
+          UP="${{ steps.versions.outputs.upstream }}"
+          gh issue create --repo "$GITHUB_REPOSITORY" \
+            --title "Sync $UP failed verification" \
+            --body "The automated sync of upstream **$UP** merged but failed the build/tests/audit gate. Log tail:
+
+          $(grep -E "^error|failures|warning: unused|panicked" /tmp/verify.log | head -20)
+
+          Fix the failures on \`sync/upstream-$UP\`, then release:
+              git push origin sync/upstream-$UP:main
+              git tag $UP && git push origin $UP
+          "
+
+      - name: Commit and publish
+        if: steps.versions.outputs.needs_sync == 'true' && steps.merge.outputs.clean == 'true' && steps.verify.outputs.ok == 'true'
+        run: |
+          UP="${{ steps.versions.outputs.upstream }}"
+          BRANCH="sync/upstream-$UP"
+          git add -A
+          git commit -m "sync: merge upstream $UP" --allow-empty
+          SHA=$(git rev-parse HEAD)
+          echo "committed=$SHA" >> "$GITHUB_OUTPUT"
+          git push origin "$BRANCH:$BRANCH"
+          MAIN_OK=1
+          if git push origin "$BRANCH:main" 2>/tmp/push_main.err; then
+            echo "main pushed"
+          else
+            MAIN_OK=0
+            echo "main push failed: $(cat /tmp/push_main.err)"
+            echo "Create or update the sync PR for main"
+            gh pr create --base main --head "$BRANCH" \
+              --title "Sync with upstream $UP" \
+              --body "Verified automated sync of upstream $UP. Main was not directly pushable, so here is the PR." 2>/dev/null || true
+          fi
+          # Push the tag only if it doesn't already exist on the remote release.
+          if git ls-remote --exit-code origin "refs/tags/$UP" >/dev/null 2>&1; then
+            echo "tag $UP already exists on origin - nothing to tag"
+          else
+            git tag "$UP"
+            git push origin "refs/tags/$UP:refs/tags/$UP"
+            echo "pushed tag $UP"
+          fi
+
+      - name: Trigger and watch release
+        if: steps.versions.outputs.needs_sync == 'true' && steps.merge.outputs.clean == 'true' && steps.verify.outputs.ok == 'true'
+        run: |
+          UP="${{ steps.versions.outputs.upstream }}"
+          set +e
+          gh workflow run release.yml -f tag="$UP"
+          sleep 15
+          RUNID=$(gh run list --workflow release.yml --limit 1 --json databaseId --jq '.[0].databaseId')
+          echo "release run id: $RUNID"
+          if [ -z "$RUNID" ]; then
+            echo "Could not find the release run - opening issue"
+            gh issue create --repo "$GITHUB_REPOSITORY" \
+              --title "Release dispatch for $UP could not be found" \
+              --body "The tag $UP was published but the Release workflow did not start. Check Actions and run it manually:
+              gh workflow run release.yml -f tag=$UP"
+          else
+            if timeout 3600 gh run watch "$RUNID" --exit-status --interval 30 >/tmp/watch.log 2>&1; then
+              echo "RELEASE COMPLETED SUCCESSFULLY"
+            else
+              echo "release run did not complete successfully - opening issue"
+              gh issue create --repo "$GITHUB_REPOSITORY" \
+                --title "Release of $UP failed" \
+                --body "The automated release build for **$UP** failed. See the Actions log:
+                https://github.com/$GITHUB_REPOSITORY/actions/runs/$RUNID"
+            fi
+          fi
