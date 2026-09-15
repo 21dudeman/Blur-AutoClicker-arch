@@ -29,7 +29,7 @@ jobs:
       - name: Fetch upstream
         run: |
           git remote add upstream https://github.com/Blur009/Blur-AutoClicker.git
-          git fetch upstream --tags --prune
+          git fetch upstream --tags --prune --force
 
       - name: Determine latest versions
         id: versions
@@ -159,9 +159,9 @@ jobs:
       - name: Reconcile lockfiles
         if: steps.versions.outputs.needs_sync == 'true' && steps.merge.outputs.clean == 'true'
         run: |
-          # Regenerate both lockfiles from the merged manifests.
+          # Regenerate both lockfiles from the merged manifests (minimal deltas only).
           npm install
-          cargo update --manifest-path src-tauri/Cargo.toml
+          bash -c 'cd src-tauri && cargo check'
 
       - name: Build frontend
         if: steps.versions.outputs.needs_sync == 'true' && steps.merge.outputs.clean == 'true'
@@ -255,11 +255,21 @@ jobs:
         run: |
           UP="${{ steps.versions.outputs.upstream }}"
           set +e
+          # Capture the current newest release run BEFORE dispatching, so we
+          # only match a run that is actually newer than this point.
+          OLDID=$(gh run list --workflow release.yml --limit 1 --json databaseId --jq '.[0].databaseId // 0')
+          echo "previous newest release run: $OLDID"
           gh workflow run release.yml -f tag="$UP"
-          sleep 15
-          RUNID=$(gh run list --workflow release.yml --limit 1 --json databaseId --jq '.[0].databaseId')
+          RUNID=""
+          for i in $(seq 1 30); do
+            sleep 5
+            RUNID=$(gh run list --workflow release.yml --limit 1 --json databaseId --jq '.[0].databaseId // ""')
+            if [ -n "$RUNID" ] && [ "$RUNID" != "$OLDID" ]; then
+              break
+            fi
+          done
           echo "release run id: $RUNID"
-          if [ -z "$RUNID" ]; then
+          if [ -z "$RUNID" ] || [ "$RUNID" = "$OLDID" ]; then
             echo "status=notfound" >> "$GITHUB_OUTPUT"
             echo "Could not find the release run - opening issue"
             gh issue create --repo "$GITHUB_REPOSITORY" \
@@ -283,9 +293,9 @@ jobs:
         run: |
           UP="${{ steps.versions.outputs.upstream }}"
           SHA="${{ steps.commit.outputs.committed }}"
-          gh issue create --repo "$GITHUB_REPOSITORY" \
-            --title "Auto-sync complete: $UP" \
-            --body "Automatic sync to upstream **$UP** finished successfully.
+          MAIN="${{ steps.commit.outputs.main_pushed }}"
+          if [ "$MAIN" = "yes" ]; then
+            BODY="Automatic sync to upstream **$UP** finished successfully.
 
           - Merged upstream $UP
           - Committed as \`$SHA\` on \`main\`
@@ -293,3 +303,15 @@ jobs:
           - Release workflow completed successfully
 
           No action needed."
+          else
+            BODY="Automatic sync to upstream **$UP** finished, but \`main\` was not directly pushable.
+
+          - Committed as \`$SHA\`
+          - Tag \`$UP\` pushed (release succeeded)
+          - Check the Actions run for the auto-created pull request to merge into \`main\`.
+
+          Needs action: merge the pull request."
+          fi
+          gh issue create --repo "$GITHUB_REPOSITORY" \
+            --title "Auto-sync complete: $UP" \
+            --body "$BODY"
