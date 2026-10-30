@@ -19,6 +19,8 @@ jobs:
   sync:
     runs-on: ubuntu-latest
     timeout-minutes: 120
+    env:
+      GH_TOKEN: ${{ github.token }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
