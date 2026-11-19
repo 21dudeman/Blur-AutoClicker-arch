@@ -106,6 +106,7 @@ jobs:
           echo "manual_files=$MANUAL" >> "$GITHUB_OUTPUT"
 
       - name: Open manual-sync issue
+        continue-on-error: true
         if: steps.versions.outputs.needs_sync == 'true' && steps.merge.outputs.merge == 'false'
         run: |
           UP="${{ steps.versions.outputs.upstream }}"
@@ -202,6 +203,7 @@ jobs:
           fi
 
       - name: Open verification-failed issue
+        continue-on-error: true
         if: steps.versions.outputs.needs_sync == 'true' && steps.merge.outputs.clean == 'true' && steps.verify.outputs.ok == 'false'
         run: |
           UP="${{ steps.versions.outputs.upstream }}"
@@ -289,6 +291,7 @@ jobs:
           fi
 
       - name: Open sync summary issue
+        continue-on-error: true
         if: steps.versions.outputs.needs_sync == 'true' && steps.merge.outputs.clean == 'true' && steps.verify.outputs.ok == 'true' && steps.release.outputs.status == 'ok'
         run: |
           UP="${{ steps.versions.outputs.upstream }}"
