@@ -295,6 +295,13 @@ pub fn start_clicker_inner(app: &AppHandle) -> AppResult<ClickerStatusPayload> {
 
     Ok(payload)
 }
+
+pub fn start_clicker_from_start_zone(app: &AppHandle) -> AppResult<ClickerStatusPayload> {
+    let state = app.state::<ClickerState>();
+    state.zone_started_clicker.store(true, Ordering::SeqCst);
+    start_clicker_inner(app)
+}
+
 pub fn stop_clicker_inner(
     app: &AppHandle,
     stop_reason: Option<String>,

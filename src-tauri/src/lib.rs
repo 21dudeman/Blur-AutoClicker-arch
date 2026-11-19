@@ -78,6 +78,10 @@ use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Listener, Manager};
 
+pub static TRAY_AVAILABLE: AtomicBool = AtomicBool::new(false);
+
+pub fn sync_indicator_config(_app: &AppHandle) {}
+
 #[cfg(target_os = "windows")]
 fn disable_browser_accelerator_keys(window: &tauri::WebviewWindow) {
     use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Settings3;
