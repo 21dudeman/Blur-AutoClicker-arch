@@ -822,8 +822,7 @@ fn update_target(
     st.target_x = (target.x as f64 + jitter_x) as i32;
     st.target_y = (target.y as f64 + jitter_y) as i32;
     let should_move =
-        st.moved_click_point_index != Some(st.click_point_index)
-            || config.cursor_nudge_px > 0.0;
+        st.moved_click_point_index != Some(st.click_point_index) || config.cursor_nudge_px > 0.0;
     if !should_move {
         return;
     }
