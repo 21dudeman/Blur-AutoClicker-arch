@@ -511,6 +511,7 @@ fn create_clicker_state() -> ClickerState {
             icon_enabled: true,
             icon_theme: String::from("auto"),
             icon_color: String::from("theme"),
+            icons_applied: false,
         }),
     }
 }
