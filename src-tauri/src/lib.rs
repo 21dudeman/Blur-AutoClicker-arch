@@ -1,8 +1,54 @@
 mod crash_handler;
 mod diagnostics;
+#[cfg(target_os = "windows")]
+mod elevation;
+#[cfg(not(target_os = "windows"))]
+mod elevation {
+    #[derive(serde::Serialize)]
+    #[serde(rename_all = "camelCase")]
+    pub struct ElevationState {
+        pub elevated: bool,
+        pub can_elevate: bool,
+    }
+
+    #[derive(Clone, Debug, PartialEq, serde::Serialize)]
+    #[serde(rename_all = "camelCase")]
+    pub struct BlockedWindow {
+        #[serde(skip_serializing)]
+        pub handle: isize,
+        #[serde(skip_serializing)]
+        pub pid: u32,
+        pub name: String,
+        pub title: String,
+    }
+
+    pub fn state() -> ElevationState {
+        ElevationState {
+            elevated: false,
+            can_elevate: false,
+        }
+    }
+
+    pub fn current_process_elevated() -> bool {
+        false
+    }
+
+    pub fn relaunch_elevated(_keep_autostart: bool) -> bool {
+        false
+    }
+
+    pub fn relaunch_unelevated(_keep_autostart: bool) -> bool {
+        false
+    }
+}
 mod error;
+mod indicator;
+mod logging;
+mod notifications;
 mod portable;
 mod settings;
+mod startup;
+mod theme_window;
 pub use settings::ClickerSettings;
 mod app_events;
 mod app_state;
@@ -15,6 +61,7 @@ mod icon;
 mod overlay;
 mod ui_commands;
 mod updates;
+mod webview_guard;
 mod window_lifecycle;
 #[cfg(target_os = "linux")]
 mod x11;
