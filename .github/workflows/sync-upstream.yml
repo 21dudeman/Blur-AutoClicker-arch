@@ -273,15 +273,15 @@ jobs:
         run: |
           UP="${{ steps.versions.outputs.upstream }}"
           set +e
-          # Capture the current newest release run BEFORE dispatching, so we
-          # only match a run that is actually newer than this point.
-          OLDID=$(gh run list --workflow release.yml --limit 1 --json databaseId --jq '.[0].databaseId // 0')
-          echo "previous newest release run: $OLDID"
-          gh workflow run release.yml -f tag="$UP"
+          # Match only workflow_dispatch runs. Tag-push runs from the tag we
+          # just created must not be mistaken for the dispatch we requested.
+          OLDID=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow release.yml --event workflow_dispatch --limit 1 --json databaseId --jq '.[0].databaseId // 0')
+          echo "previous newest workflow_dispatch release run: $OLDID"
+          gh workflow run release.yml --repo "$GITHUB_REPOSITORY" --ref main -f tag="$UP"
           RUNID=""
-          for i in $(seq 1 30); do
+          for i in $(seq 1 60); do
             sleep 5
-            RUNID=$(gh run list --workflow release.yml --limit 1 --json databaseId --jq '.[0].databaseId // ""')
+            RUNID=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow release.yml --event workflow_dispatch --limit 1 --json databaseId --jq '.[0].databaseId // ""')
             if [ -n "$RUNID" ] && [ "$RUNID" != "$OLDID" ]; then
               break
             fi
