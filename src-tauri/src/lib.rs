@@ -1,8 +1,54 @@
 mod crash_handler;
 mod diagnostics;
+#[cfg(target_os = "windows")]
+mod elevation;
+#[cfg(not(target_os = "windows"))]
+mod elevation {
+    #[derive(serde::Serialize)]
+    #[serde(rename_all = "camelCase")]
+    pub struct ElevationState {
+        pub elevated: bool,
+        pub can_elevate: bool,
+    }
+
+    #[derive(Clone, Debug, PartialEq, serde::Serialize)]
+    #[serde(rename_all = "camelCase")]
+    pub struct BlockedWindow {
+        #[serde(skip_serializing)]
+        pub handle: isize,
+        #[serde(skip_serializing)]
+        pub pid: u32,
+        pub name: String,
+        pub title: String,
+    }
+
+    pub fn state() -> ElevationState {
+        ElevationState {
+            elevated: false,
+            can_elevate: false,
+        }
+    }
+
+    pub fn current_process_elevated() -> bool {
+        false
+    }
+
+    pub fn relaunch_elevated(_keep_autostart: bool) -> bool {
+        false
+    }
+
+    pub fn relaunch_unelevated(_keep_autostart: bool) -> bool {
+        false
+    }
+}
 mod error;
+mod indicator;
+mod logging;
+mod notifications;
 mod portable;
 mod settings;
+mod startup;
+mod theme_window;
 pub use settings::ClickerSettings;
 mod app_events;
 mod app_state;
@@ -15,6 +61,7 @@ mod icon;
 mod overlay;
 mod ui_commands;
 mod updates;
+mod webview_guard;
 mod window_lifecycle;
 #[cfg(target_os = "linux")]
 mod x11;
@@ -30,6 +77,10 @@ use std::sync::{Arc, Mutex};
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Listener, Manager};
+
+pub static TRAY_AVAILABLE: AtomicBool = AtomicBool::new(false);
+
+pub fn sync_indicator_config(_app: &AppHandle) {}
 
 #[cfg(target_os = "windows")]
 fn disable_browser_accelerator_keys(window: &tauri::WebviewWindow) {
@@ -443,6 +494,11 @@ fn create_clicker_state() -> ClickerState {
         master_enabled: AtomicBool::new(true),
         master_allowed: AtomicBool::new(true),
         last_master_allowed: AtomicBool::new(true),
+        elevation_blocked_window: Mutex::new(None),
+        elevation_prompt_generation: AtomicU64::new(0),
+        engine_busy: AtomicBool::new(false),
+        elevation_suppressed: Mutex::new(Vec::new()),
+        elevation_notice_enabled: AtomicBool::new(true),
         suppress_hotkey_until_ms: AtomicU64::new(0),
         suppress_hotkey_until_release: AtomicBool::new(false),
         hotkey_capture_active: AtomicBool::new(false),
@@ -452,6 +508,7 @@ fn create_clicker_state() -> ClickerState {
         paused: Arc::new(AtomicBool::new(false)),
         paused_by_zone: AtomicBool::new(false),
         zone_started_clicker: AtomicBool::new(false),
+        zone_started_generation: AtomicU64::new(0),
         warning: Mutex::new(None),
         icon_cache: Mutex::new(crate::icon::init_icon_cache()),
         icon_state: Mutex::new(IconState {
@@ -460,6 +517,7 @@ fn create_clicker_state() -> ClickerState {
             icon_enabled: true,
             icon_theme: String::from("auto"),
             icon_color: String::from("theme"),
+            icons_applied: false,
         }),
     }
 }

@@ -61,7 +61,9 @@ fn milestone_summary(
 }
 
 fn profile_label() -> String {
-    let raw = std::env::var("USERPROFILE").unwrap_or_default();
+    let raw = std::env::var("USERPROFILE")
+        .or_else(|_| std::env::var("HOME"))
+        .unwrap_or_default();
     let path = std::path::Path::new(&raw);
     match (raw.is_empty(), path.parent()) {
         (false, Some(parent)) => format!("{}{}<user>", parent.display(), std::path::MAIN_SEPARATOR),
@@ -153,7 +155,9 @@ mod tests {
 
     #[test]
     fn profile_label_keeps_the_account_name_out_of_the_log() {
-        let raw = std::env::var("USERPROFILE").unwrap_or_default();
+        let raw = std::env::var("USERPROFILE")
+            .or_else(|_| std::env::var("HOME"))
+            .unwrap_or_default();
         let leaf = std::path::Path::new(&raw)
             .file_name()
             .and_then(|name| name.to_str())

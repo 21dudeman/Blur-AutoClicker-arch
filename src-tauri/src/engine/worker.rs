@@ -295,6 +295,13 @@ pub fn start_clicker_inner(app: &AppHandle) -> AppResult<ClickerStatusPayload> {
 
     Ok(payload)
 }
+
+pub fn start_clicker_from_start_zone(app: &AppHandle) -> AppResult<ClickerStatusPayload> {
+    let state = app.state::<ClickerState>();
+    state.zone_started_clicker.store(true, Ordering::SeqCst);
+    start_clicker_inner(app)
+}
+
 pub fn stop_clicker_inner(
     app: &AppHandle,
     stop_reason: Option<String>,
@@ -445,8 +452,8 @@ pub fn build_config(settings: &ClickerSettings) -> AppResult<ClickerConfig> {
                 radius: point.radius,
             })
             .collect(),
-        offset: 2.0,
-        offset_chance: 21.6,
+        cursor_nudge_px: 0.0,
+        cursor_nudge_chance_pct: 0.0,
         smoothing: 1,
         stop_zones: settings
             .stop_zones
@@ -516,6 +523,11 @@ pub fn current_status(app: &AppHandle) -> ClickerStatusPayload {
         .unwrap_or_else(poisoned_inner)
         .clone();
     let warning = state.warning.lock().unwrap_or_else(poisoned_inner).clone();
+    let elevation_blocked_window = state
+        .elevation_blocked_window
+        .lock()
+        .unwrap_or_else(poisoned_inner)
+        .clone();
     let active_click_point_index = state.active_click_point_index.load(Ordering::SeqCst);
     let active_click_point_tick = state.active_click_point_tick.load(Ordering::SeqCst);
 
@@ -533,6 +545,8 @@ pub fn current_status(app: &AppHandle) -> ClickerStatusPayload {
         },
         active_click_point_tick,
         master_allowed: state.master_allowed.load(Ordering::SeqCst),
+        elevation_blocked: elevation_blocked_window.is_some(),
+        elevation_blocked_window,
     }
 }
 
@@ -794,16 +808,18 @@ fn update_target(
         jitter_x += r * angle.cos();
         jitter_y += r * angle.sin();
     }
-    if config.offset_chance > 0.0 && rng.next_f64() * 100.0 <= config.offset_chance {
+    if config.cursor_nudge_chance_pct > 0.0
+        && rng.next_f64() * 100.0 <= config.cursor_nudge_chance_pct
+    {
         let angle = rng.next_f64() * 2.0 * PI;
-        let r = rng.next_f64().sqrt() * config.offset;
+        let r = rng.next_f64().sqrt() * config.cursor_nudge_px;
         jitter_x += r * angle.cos();
         jitter_y += r * angle.sin();
     }
     st.target_x = (target.x as f64 + jitter_x) as i32;
     st.target_y = (target.y as f64 + jitter_y) as i32;
     let should_move =
-        st.moved_click_point_index != Some(st.click_point_index) || config.offset > 0.0;
+        st.moved_click_point_index != Some(st.click_point_index) || config.cursor_nudge_px > 0.0;
     if !should_move {
         return;
     }
@@ -1201,8 +1217,8 @@ mod tests {
             stop_zones_enabled: false,
             stop_when_complete: false,
             click_points: Vec::new(),
-            offset: 0.0,
-            offset_chance: 0.0,
+            cursor_nudge_px: 0.0,
+            cursor_nudge_chance_pct: 0.0,
             smoothing: 0,
             stop_zones: Vec::new(),
             corner_stop_enabled: true,

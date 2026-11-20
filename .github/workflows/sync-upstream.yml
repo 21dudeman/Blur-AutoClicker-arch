@@ -139,18 +139,33 @@ jobs:
       - name: Install system dependencies
         if: steps.versions.outputs.needs_sync == 'true' && steps.merge.outputs.clean == 'true'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            libappindicator3-dev \
-            librsvg2-dev \
-            patchelf \
-            libx11-dev \
-            libxtst-dev \
-            libxinerama-dev \
-            libssl-dev \
-            pkg-config \
-            build-essential
+          timeout 5m sudo apt-get update -o Acquire::Retries=3 \
+            -o Acquire::http::Timeout=30 \
+            -o Acquire::https::Timeout=30
+          for attempt in 1 2; do
+            if timeout 5m sudo apt-get install -y \
+              -o Acquire::Retries=3 \
+              -o Acquire::http::Timeout=30 \
+              -o Acquire::https::Timeout=30 \
+              libwebkit2gtk-4.1-dev \
+              libappindicator3-dev \
+              librsvg2-dev \
+              patchelf \
+              libx11-dev \
+              libxtst-dev \
+              libxinerama-dev \
+              libssl-dev \
+              pkg-config \
+              build-essential; then
+              exit 0
+            fi
+            echo "apt-get install failed (attempt $attempt/2); retrying..."
+            timeout 5m sudo apt-get update -o Acquire::Retries=3 \
+              -o Acquire::http::Timeout=30 \
+              -o Acquire::https::Timeout=30
+            sleep 10
+          done
+          exit 1
 
       - uses: actions/setup-node@v4
         if: steps.versions.outputs.needs_sync == 'true' && steps.merge.outputs.clean == 'true'
