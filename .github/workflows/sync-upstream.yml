@@ -177,6 +177,7 @@ jobs:
         run: |
           # Regenerate both lockfiles from the merged manifests (minimal deltas only).
           npm install
+          npm run frontend:build
           bash -c 'cd src-tauri && cargo check'
 
       - name: Build frontend
